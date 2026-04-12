@@ -158,7 +158,8 @@ impl<R: Region> RegionIndex<R> {
             })
             .collect();
 
-        reranked.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        reranked
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         reranked.truncate(k);
         Ok(reranked)
     }
@@ -293,7 +294,14 @@ mod tests {
         // Query inside box 5 ([10,10,10]-[11,11,11])
         let query = [10.5, 10.5, 10.5];
         let results = idx
-            .search(&query, 5, SearchParams { ef: 100, overretrieve: 10 })
+            .search(
+                &query,
+                5,
+                SearchParams {
+                    ef: 100,
+                    overretrieve: 10,
+                },
+            )
             .unwrap();
 
         assert_eq!(results[0].0, 5);
@@ -314,18 +322,29 @@ mod tests {
         let dist_fn = |q: &[f32], internal_id: u32| -> f32 {
             let o = internal_id as f32 * 2.0;
             let center = [o + 0.5, o + 0.5, o + 0.5];
-            center.iter().zip(q).map(|(c, p)| (c - p).powi(2)).sum::<f32>().sqrt()
+            center
+                .iter()
+                .zip(q)
+                .map(|(c, p)| (c - p).powi(2))
+                .sum::<f32>()
+                .sqrt()
         };
 
         // Query at box 3's center: custom distance should return sorted results
-        let results = idx.search_with_distance(&[6.5, 6.5, 6.5], 3, 200, &dist_fn).unwrap();
+        let results = idx
+            .search_with_distance(&[6.5, 6.5, 6.5], 3, 200, &dist_fn)
+            .unwrap();
         assert_eq!(results.len(), 3);
         // Results must be sorted by distance
         for w in results.windows(2) {
             assert!(w[0].1 <= w[1].1, "results not sorted: {:?}", results);
         }
         // Nearest result should have distance < 2.0 (within 1 box width of query)
-        assert!(results[0].1 < 2.0, "closest result too far: {}", results[0].1);
+        assert!(
+            results[0].1 < 2.0,
+            "closest result too far: {}",
+            results[0].1
+        );
     }
 
     #[test]
@@ -335,7 +354,7 @@ mod tests {
         idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // big
         idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0])); // small, inside big
         idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])); // far
-        // Pad to avoid degenerate 3-node HNSW
+                                                                      // Pad to avoid degenerate 3-node HNSW
         for i in 3..15 {
             let o = (i as f32) * 3.0;
             idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]));
