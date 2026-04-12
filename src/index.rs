@@ -1,5 +1,16 @@
+use std::collections::HashMap;
+
 use crate::Region;
 use vicinity::hnsw::HNSWIndex;
+
+/// Error type for region index operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("index must be built before search")]
+    NotBuilt,
+    #[error("vicinity: {0}")]
+    Vicinity(#[from] vicinity::RetrieveError),
+}
 
 /// ANN index over region embeddings.
 ///
@@ -29,7 +40,8 @@ use vicinity::hnsw::HNSWIndex;
 pub struct RegionIndex<R: Region> {
     hnsw: HNSWIndex,
     regions: Vec<R>,
-    ids: Vec<u32>,
+    /// Maps external doc_id -> index into `regions`.
+    id_to_pos: HashMap<u32, usize>,
     built: bool,
 }
 
@@ -77,19 +89,18 @@ pub type SearchResult = (u32, f32);
 
 impl<R: Region> RegionIndex<R> {
     /// Create a new region index for the given dimensionality.
-    pub fn new(dim: usize, params: IndexParams) -> Result<Self, String> {
+    pub fn new(dim: usize, params: IndexParams) -> Result<Self, Error> {
         let hnsw = HNSWIndex::builder(dim)
             .m(params.m)
             .m_max(params.m_max)
             .ef_construction(params.ef_construction)
             .metric(vicinity::DistanceMetric::L2)
-            .build()
-            .map_err(|e: vicinity::RetrieveError| e.to_string())?;
+            .build()?;
 
         Ok(Self {
             hnsw,
             regions: Vec::new(),
-            ids: Vec::new(),
+            id_to_pos: HashMap::new(),
             built: false,
         })
     }
@@ -103,14 +114,15 @@ impl<R: Region> RegionIndex<R> {
         self.hnsw
             .add(id, center)
             .expect("failed to add center to HNSW");
+        let pos = self.regions.len();
         self.regions.push(region);
-        self.ids.push(id);
+        self.id_to_pos.insert(id, pos);
         self.built = false;
     }
 
     /// Build the underlying HNSW graph. Must be called before search.
-    pub fn build(&mut self) -> Result<(), String> {
-        self.hnsw.build().map_err(|e| e.to_string())?;
+    pub fn build(&mut self) -> Result<(), Error> {
+        self.hnsw.build()?;
         self.built = true;
         Ok(())
     }
@@ -120,29 +132,27 @@ impl<R: Region> RegionIndex<R> {
     /// Retrieves `k * overretrieve` candidates from the center-based HNSW
     /// index, then reranks each candidate using the true point-to-region
     /// distance from [`Region::distance_to_point`].
+    #[must_use = "search results are not used"]
     pub fn search(
         &self,
         query: &[f32],
         k: usize,
         params: SearchParams,
-    ) -> Result<Vec<SearchResult>, String> {
+    ) -> Result<Vec<SearchResult>, Error> {
         if !self.built {
-            return Err("index must be built before search".into());
+            return Err(Error::NotBuilt);
         }
 
         let fetch_k = k.saturating_mul(params.overretrieve).max(k);
 
         // Phase 1: center-based ANN retrieval
-        let candidates = self
-            .hnsw
-            .search(query, fetch_k, params.ef)
-            .map_err(|e| e.to_string())?;
+        let candidates = self.hnsw.search(query, fetch_k, params.ef)?;
 
         // Phase 2: rerank with true region distance
         let mut reranked: Vec<SearchResult> = candidates
             .into_iter()
             .map(|(doc_id, _center_dist)| {
-                let region = self.region_by_id(doc_id);
+                let region = &self.regions[self.id_to_pos[&doc_id]];
                 let true_dist = region.distance_to_point(query);
                 (doc_id, true_dist)
             })
@@ -161,21 +171,18 @@ impl<R: Region> RegionIndex<R> {
     ///
     /// For exhaustive containment (guaranteed recall), use
     /// [`containing_exhaustive`](Self::containing_exhaustive).
-    pub fn containing(&self, point: &[f32], params: SearchParams) -> Result<Vec<u32>, String> {
+    pub fn containing(&self, point: &[f32], params: SearchParams) -> Result<Vec<u32>, Error> {
         if !self.built {
-            return Err("index must be built before search".into());
+            return Err(Error::NotBuilt);
         }
 
         let fetch_k = self.regions.len().min(params.ef * params.overretrieve);
 
-        let candidates = self
-            .hnsw
-            .search(point, fetch_k, params.ef)
-            .map_err(|e| e.to_string())?;
+        let candidates = self.hnsw.search(point, fetch_k, params.ef)?;
 
         let result: Vec<u32> = candidates
             .into_iter()
-            .filter(|(doc_id, _)| self.region_by_id(*doc_id).contains(point))
+            .filter(|(doc_id, _)| self.regions[self.id_to_pos[doc_id]].contains(point))
             .map(|(doc_id, _)| doc_id)
             .collect();
 
@@ -186,11 +193,10 @@ impl<R: Region> RegionIndex<R> {
     ///
     /// Guaranteed recall but O(n) in the number of regions.
     pub fn containing_exhaustive(&self, point: &[f32]) -> Vec<u32> {
-        self.ids
+        self.id_to_pos
             .iter()
-            .zip(self.regions.iter())
-            .filter(|(_, r)| r.contains(point))
-            .map(|(id, _)| *id)
+            .filter(|(_, &pos)| self.regions[pos].contains(point))
+            .map(|(&id, _)| id)
             .collect()
     }
 
@@ -199,10 +205,9 @@ impl<R: Region> RegionIndex<R> {
     /// Useful as ground truth for measuring recall of the ANN-based search.
     pub fn search_exhaustive(&self, query: &[f32], k: usize) -> Vec<SearchResult> {
         let mut results: Vec<SearchResult> = self
-            .ids
+            .id_to_pos
             .iter()
-            .zip(self.regions.iter())
-            .map(|(id, r)| (*id, r.distance_to_point(query)))
+            .map(|(&id, &pos)| (id, self.regions[pos].distance_to_point(query)))
             .collect();
         results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
         results.truncate(k);
@@ -226,34 +231,29 @@ impl<R: Region> RegionIndex<R> {
         k: usize,
         ef: usize,
         dist_fn: &dyn Fn(&[f32], u32) -> f32,
-    ) -> Result<Vec<SearchResult>, String> {
+    ) -> Result<Vec<SearchResult>, Error> {
         if !self.built {
-            return Err("index must be built before search".into());
+            return Err(Error::NotBuilt);
         }
 
-        self.hnsw
-            .search_with_distance(query, k, ef, dist_fn)
-            .map_err(|e| e.to_string())
+        Ok(self.hnsw.search_with_distance(query, k, ef, dist_fn)?)
+    }
+
+    /// Get a region by its external ID.
+    pub fn get(&self, id: u32) -> Option<&R> {
+        self.id_to_pos.get(&id).map(|&pos| &self.regions[pos])
     }
 
     /// Number of indexed regions.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.regions.len()
     }
 
     /// Whether the index is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.regions.is_empty()
-    }
-
-    /// Get a region by its external ID.
-    fn region_by_id(&self, doc_id: u32) -> &R {
-        let pos = self
-            .ids
-            .iter()
-            .position(|&id| id == doc_id)
-            .expect("doc_id not found in region index");
-        &self.regions[pos]
     }
 }
 
@@ -342,5 +342,21 @@ mod tests {
         assert!(result.contains(&0));
         assert!(result.contains(&1));
         assert!(!result.contains(&2));
+    }
+
+    #[test]
+    fn get_returns_region() {
+        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+        idx.add(42, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
+        idx.build().unwrap();
+
+        assert!(idx.get(42).is_some());
+        assert!(idx.get(99).is_none());
+    }
+
+    #[test]
+    fn error_on_search_before_build() {
+        let idx: RegionIndex<AxisBox> = RegionIndex::new(2, Default::default()).unwrap();
+        assert!(idx.search(&[0.0, 0.0], 1, Default::default()).is_err());
     }
 }
