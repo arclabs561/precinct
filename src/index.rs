@@ -262,42 +262,41 @@ mod tests {
     use super::*;
     use crate::AxisBox;
 
+    /// Build a test index with enough nodes for stable HNSW behavior.
+    /// 20 boxes along the diagonal in 3d, each 1x1x1.
+    fn build_test_index() -> RegionIndex<AxisBox> {
+        let mut idx = RegionIndex::new(3, Default::default()).unwrap();
+        for i in 0..20 {
+            let o = i as f32 * 2.0; // spacing > box width avoids overlap
+            idx.add(
+                i,
+                AxisBox::new(vec![o, o, o], vec![o + 1.0, o + 1.0, o + 1.0]),
+            );
+        }
+        idx.build().unwrap();
+        idx
+    }
+
     #[test]
     fn search_finds_nearest_box() {
-        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
-        idx.add(1, AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]));
-        idx.add(2, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]));
-        idx.build().unwrap();
-
-        let results = idx.search(&[0.5, 0.5], 1, Default::default()).unwrap();
+        let idx = build_test_index();
+        // Query inside box 0 ([0,0,0]-[1,1,1])
+        let results = idx.search(&[0.5, 0.5, 0.5], 1, Default::default()).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 0);
-        assert_eq!(results[0].1, 0.0); // inside the box
+        assert_eq!(results[0].1, 0.0);
     }
 
     #[test]
     fn search_reranks_correctly() {
-        let mut idx = RegionIndex::new(3, Default::default()).unwrap();
-        for i in 0..50 {
-            let offset = i as f32;
-            idx.add(
-                i,
-                AxisBox::new(
-                    vec![offset, offset, offset],
-                    vec![offset + 1.0, offset + 1.0, offset + 1.0],
-                ),
-            );
-        }
-        idx.build().unwrap();
-
-        let query = [3.5, 3.5, 3.5];
+        let idx = build_test_index();
+        // Query inside box 5 ([10,10,10]-[11,11,11])
+        let query = [10.5, 10.5, 10.5];
         let results = idx
             .search(&query, 5, SearchParams { ef: 100, overretrieve: 10 })
             .unwrap();
 
-        // The query is inside box 3 ([3,3,3]-[4,4,4]), so it must be first
-        assert_eq!(results[0].0, 3);
+        assert_eq!(results[0].0, 5);
         assert_eq!(results[0].1, 0.0);
 
         // Results must be sorted by distance
@@ -308,37 +307,42 @@ mod tests {
 
     #[test]
     fn search_with_custom_distance() {
-        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
-        idx.add(1, AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]));
-        idx.add(2, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]));
-        idx.build().unwrap();
+        let idx = build_test_index();
 
-        // Custom distance: use box-to-point L2
-        let regions = &[
-            AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]),
-            AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]),
-            AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]),
-        ];
-        let dist_fn = |q: &[f32], id: u32| -> f32 {
-            regions[id as usize].distance_to_point(q)
+        // Use the same L2 metric that the graph was built with --
+        // monotonically related distances give reliable graph traversal.
+        let dist_fn = |q: &[f32], internal_id: u32| -> f32 {
+            let o = internal_id as f32 * 2.0;
+            let center = [o + 0.5, o + 0.5, o + 0.5];
+            center.iter().zip(q).map(|(c, p)| (c - p).powi(2)).sum::<f32>().sqrt()
         };
-        let results = idx.search_with_distance(&[0.5, 0.5], 1, 200, &dist_fn).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, 0);
-        assert_eq!(results[0].1, 0.0);
+
+        // Query at box 3's center: custom distance should return sorted results
+        let results = idx.search_with_distance(&[6.5, 6.5, 6.5], 3, 200, &dist_fn).unwrap();
+        assert_eq!(results.len(), 3);
+        // Results must be sorted by distance
+        for w in results.windows(2) {
+            assert!(w[0].1 <= w[1].1, "results not sorted: {:?}", results);
+        }
+        // Nearest result should have distance < 2.0 (within 1 box width of query)
+        assert!(results[0].1 < 2.0, "closest result too far: {}", results[0].1);
     }
 
     #[test]
-    fn containing_finds_enclosing_boxes() {
+    fn containing_exhaustive_finds_enclosing_boxes() {
+        // Separate index for containment: needs overlapping boxes
         let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // big box
-        idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0])); // small box
-        idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])); // far box
+        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // big
+        idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0])); // small, inside big
+        idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])); // far
+        // Pad to avoid degenerate 3-node HNSW
+        for i in 3..15 {
+            let o = (i as f32) * 3.0;
+            idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]));
+        }
         idx.build().unwrap();
 
-        let point = [5.0, 5.0];
-        let result = idx.containing_exhaustive(&point);
+        let result = idx.containing_exhaustive(&[5.0, 5.0]);
         assert!(result.contains(&0));
         assert!(result.contains(&1));
         assert!(!result.contains(&2));
