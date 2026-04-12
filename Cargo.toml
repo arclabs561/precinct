@@ -1,0 +1,32 @@
+[package]
+name = "precinct"
+version = "0.1.0"
+authors = ["Arc <attobop@gmail.com>"]
+edition = "2021"
+rust-version = "1.80"
+description = "Approximate nearest-neighbor search over region embeddings"
+repository = "https://github.com/arclabs561/precinct"
+documentation = "https://docs.rs/precinct"
+license = "MIT OR Apache-2.0"
+keywords = ["ann", "box-embedding", "region-search", "nearest-neighbor", "containment"]
+categories = ["algorithms", "science"]
+exclude = ["benches/", "data/", ".github/"]
+
+[workspace]
+
+[dependencies]
+rand = "0.9"
+thiserror = "2.0"
+
+# Point ANN backend (optional -- enables RegionIndex)
+vicinity = { version = "0.3", optional = true, default-features = false, features = ["hnsw"] }
+
+[dev-dependencies]
+rand = "0.9"
+
+[features]
+default = ["index"]
+index = ["dep:vicinity"]
+
+[patch.crates-io]
+vicinity = { path = "../vicinity" }
