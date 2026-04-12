@@ -82,7 +82,7 @@ impl<R: Region> RegionIndex<R> {
             .m(params.m)
             .m_max(params.m_max)
             .ef_construction(params.ef_construction)
-            .metric(vicinity::DistanceMetric::L2)
+            .auto_normalize(true)
             .build()
             .map_err(|e: vicinity::RetrieveError| e.to_string())?;
 
