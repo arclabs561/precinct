@@ -30,6 +30,8 @@ pub use region::{AxisBox, Ball, Region};
 mod distance;
 pub use distance::{box_to_point_l2, ball_to_point_l2};
 
+pub mod io;
+
 #[cfg(feature = "index")]
 pub mod index;
 #[cfg(feature = "index")]
