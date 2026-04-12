@@ -30,8 +30,8 @@ pub enum Error {
 /// use precinct::{AxisBox, RegionIndex};
 ///
 /// let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-/// idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
-/// idx.add(1, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]));
+/// idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0])).unwrap();
+/// idx.add(1, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0])).unwrap();
 /// idx.build().unwrap();
 ///
 /// let results = idx.search(&[0.5, 0.5], 1, Default::default()).unwrap();
@@ -109,15 +109,14 @@ impl<R: Region> RegionIndex<R> {
     ///
     /// The region's center is indexed for ANN retrieval. The full region
     /// geometry is stored for reranking.
-    pub fn add(&mut self, id: u32, region: R) {
+    pub fn add(&mut self, id: u32, region: R) -> Result<(), Error> {
         let center = region.center().to_vec();
-        self.hnsw
-            .add(id, center)
-            .expect("failed to add center to HNSW");
+        self.hnsw.add(id, center)?;
         let pos = self.regions.len();
         self.regions.push(region);
         self.id_to_pos.insert(id, pos);
         self.built = false;
+        Ok(())
     }
 
     /// Build the underlying HNSW graph. Must be called before search.
@@ -272,7 +271,8 @@ mod tests {
             idx.add(
                 i,
                 AxisBox::new(vec![o, o, o], vec![o + 1.0, o + 1.0, o + 1.0]),
-            );
+            )
+            .unwrap();
         }
         idx.build().unwrap();
         idx
@@ -351,13 +351,17 @@ mod tests {
     fn containing_exhaustive_finds_enclosing_boxes() {
         // Separate index for containment: needs overlapping boxes
         let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // big
-        idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0])); // small, inside big
-        idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])); // far
-                                                                      // Pad to avoid degenerate 3-node HNSW
+        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0]))
+            .unwrap();
+        idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0]))
+            .unwrap();
+        idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0]))
+            .unwrap();
+        // Pad to avoid degenerate 3-node HNSW
         for i in 3..15 {
             let o = (i as f32) * 3.0;
-            idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]));
+            idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]))
+                .unwrap();
         }
         idx.build().unwrap();
 
@@ -370,7 +374,8 @@ mod tests {
     #[test]
     fn get_returns_region() {
         let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-        idx.add(42, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
+        idx.add(42, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]))
+            .unwrap();
         idx.build().unwrap();
 
         assert!(idx.get(42).is_some());
