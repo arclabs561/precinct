@@ -31,6 +31,6 @@ mod distance;
 pub use distance::{box_to_point_l2, ball_to_point_l2};
 
 #[cfg(feature = "index")]
-mod index;
+pub mod index;
 #[cfg(feature = "index")]
-pub use index::RegionIndex;
+pub use index::{IndexParams, RegionIndex, SearchParams};
