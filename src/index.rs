@@ -82,7 +82,7 @@ impl<R: Region> RegionIndex<R> {
             .m(params.m)
             .m_max(params.m_max)
             .ef_construction(params.ef_construction)
-            .auto_normalize(true)
+            .metric(vicinity::DistanceMetric::L2)
             .build()
             .map_err(|e: vicinity::RetrieveError| e.to_string())?;
 
@@ -209,6 +209,33 @@ impl<R: Region> RegionIndex<R> {
         results
     }
 
+    /// Search using a custom distance function during graph traversal.
+    ///
+    /// The closure `dist_fn(query, internal_id)` is called for every distance
+    /// computation during beam search. The `internal_id` is the zero-based
+    /// insertion order (i.e., the Nth region added has internal_id N).
+    ///
+    /// Note: for region distance (box-to-point), this typically produces
+    /// *worse* recall than [`search`](Self::search) because the graph was
+    /// built for center-to-center L2, not for region distance. Use this
+    /// for custom metrics that are monotonically related to L2 (e.g.,
+    /// quantized distance approximations).
+    pub fn search_with_distance(
+        &self,
+        query: &[f32],
+        k: usize,
+        ef: usize,
+        dist_fn: &dyn Fn(&[f32], u32) -> f32,
+    ) -> Result<Vec<SearchResult>, String> {
+        if !self.built {
+            return Err("index must be built before search".into());
+        }
+
+        self.hnsw
+            .search_with_distance(query, k, ef, dist_fn)
+            .map_err(|e| e.to_string())
+    }
+
     /// Number of indexed regions.
     pub fn len(&self) -> usize {
         self.regions.len()
@@ -277,6 +304,29 @@ mod tests {
         for w in results.windows(2) {
             assert!(w[0].1 <= w[1].1, "results not sorted: {:?}", results);
         }
+    }
+
+    #[test]
+    fn search_with_custom_distance() {
+        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
+        idx.add(1, AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]));
+        idx.add(2, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]));
+        idx.build().unwrap();
+
+        // Custom distance: use box-to-point L2
+        let regions = &[
+            AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]),
+            AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]),
+            AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]),
+        ];
+        let dist_fn = |q: &[f32], id: u32| -> f32 {
+            regions[id as usize].distance_to_point(q)
+        };
+        let results = idx.search_with_distance(&[0.5, 0.5], 1, 200, &dist_fn).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+        assert_eq!(results[0].1, 0.0);
     }
 
     #[test]
