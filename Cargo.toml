@@ -15,7 +15,6 @@ exclude = ["benches/", "data/", ".github/"]
 [workspace]
 
 [dependencies]
-rand = "0.9"
 thiserror = "2.0"
 
 # Point ANN backend (optional -- enables RegionIndex)

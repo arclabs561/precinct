@@ -65,7 +65,7 @@ fn run_benchmark(cfg: &Config) {
     let t = Instant::now();
     let mut index = RegionIndex::new(cfg.dim, Default::default()).unwrap();
     for (i, b) in boxes.iter().enumerate() {
-        index.add(i as u32, b.clone());
+        index.add(i as u32, b.clone()).unwrap();
     }
     index.build().unwrap();
     let build_ms = t.elapsed().as_millis();

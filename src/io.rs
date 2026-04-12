@@ -12,7 +12,12 @@ use std::io::{self, Read, Write};
 
 /// Write a collection of boxes to a binary stream.
 pub fn write_boxes<W: Write>(writer: &mut W, ids: &[u32], boxes: &[AxisBox]) -> io::Result<()> {
-    assert_eq!(ids.len(), boxes.len());
+    if ids.len() != boxes.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ids and boxes must have the same length",
+        ));
+    }
     if boxes.is_empty() {
         writer.write_all(&0u32.to_le_bytes())?;
         writer.write_all(&0u32.to_le_bytes())?;

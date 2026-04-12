@@ -130,10 +130,12 @@ impl Region for AxisBox {
     }
 
     fn distance_to_point(&self, point: &[f32]) -> f32 {
+        debug_assert_eq!(point.len(), self.min.len(), "point dimension mismatch");
         crate::distance::box_to_point_l2(&self.min, &self.max, point)
     }
 
     fn contains(&self, point: &[f32]) -> bool {
+        debug_assert_eq!(point.len(), self.min.len(), "point dimension mismatch");
         point
             .iter()
             .zip(self.min.iter())
@@ -174,10 +176,12 @@ impl Region for Ball {
     }
 
     fn distance_to_point(&self, point: &[f32]) -> f32 {
+        debug_assert_eq!(point.len(), self.center.len(), "point dimension mismatch");
         crate::distance::ball_to_point_l2(&self.center, self.radius, point)
     }
 
     fn contains(&self, point: &[f32]) -> bool {
+        debug_assert_eq!(point.len(), self.center.len(), "point dimension mismatch");
         let dist_sq: f32 = self
             .center
             .iter()
