@@ -18,7 +18,7 @@ exclude = ["benches/", "data/", ".github/"]
 thiserror = "2.0"
 
 # Point ANN backend (optional -- enables RegionIndex)
-vicinity = { version = "0.3", optional = true, default-features = false, features = ["hnsw"] }
+vicinity = { version = "0.4", optional = true, default-features = false, features = ["hnsw"] }
 
 [dev-dependencies]
 rand = "0.9"
