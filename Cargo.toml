@@ -26,6 +26,3 @@ rand = "0.9"
 [features]
 default = ["index"]
 index = ["dep:vicinity"]
-
-[patch.crates-io]
-vicinity = { path = "../vicinity" }

@@ -11,7 +11,7 @@ HNSW graph and reranking candidates with the true point-to-region distance.
 
 ```toml
 [dependencies]
-precinct = "0.1"
+precinct = "0.2"
 ```
 
 or `cargo add precinct`.
