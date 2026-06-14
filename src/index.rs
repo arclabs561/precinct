@@ -236,7 +236,12 @@ impl<R: Region> RegionIndex<R> {
             return Err(Error::NotBuilt);
         }
 
-        Ok(self.hnsw.search_with_distance(query, k, ef, dist_fn)?)
+        // vicinity 0.8 takes the distance fn generically (`F: Fn`); wrap the
+        // trait object so it forwards as a sized closure without changing this
+        // method's public `&dyn Fn` signature.
+        Ok(self
+            .hnsw
+            .search_with_distance(query, k, ef, &|q, id| dist_fn(q, id))?)
     }
 
     /// Get a region by its external ID.
