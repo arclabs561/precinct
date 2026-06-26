@@ -19,6 +19,9 @@ thiserror = "2.0"
 
 # Point ANN backend (optional -- enables RegionIndex)
 vicinity = { version = "0.8", optional = true, default-features = false, features = ["hnsw"] }
+serde = { version = "1", features = ["derive"], optional = true }
+segstore = { version = "0.1", optional = true }
+durability = { version = "0.6", optional = true }
 
 [dev-dependencies]
 rand = "0.9"
@@ -26,3 +29,8 @@ rand = "0.9"
 [features]
 default = ["index"]
 index = ["dep:vicinity"]
+# Optional serde derives on region types (persist/reload a region).
+serde = ["dep:serde"]
+# `store` adds an updatable, durable multi-segment region-ANN index
+# (`store::UpdatableIndex`) via segstore.
+store = ["index", "serde", "dep:segstore", "dep:durability"]

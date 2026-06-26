@@ -25,6 +25,7 @@ pub trait Region {
 /// The standard representation for box embeddings (Query2Box, Box2EL,
 /// BoxTaxo). Each dimension `i` spans `[min[i], max[i]]`.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AxisBox {
     min: Vec<f32>,
     max: Vec<f32>,
