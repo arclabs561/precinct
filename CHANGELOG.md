@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.3.1] - 2026-06-26
+
+### Fixed
+
+- `store::UpdatableIndex` caches the per-segment `RegionIndex` and rebuilds it
+  only on mutation (add/delete/compact), instead of rebuilding every segment on
+  every query.
+- `store::UpdatableIndex::add` now returns an error for a region whose dimension
+  does not match the index, rather than silently dropping it from every rebuild.
+
+### Changed
+
+- `store` docs no longer claim an "exact" cross-segment merge. The underlying
+  HNSW search is approximate, so the merged result is approximate.
+
 ## [0.3.0] - 2026-06-26
 
 ### Added
