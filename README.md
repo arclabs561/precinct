@@ -37,6 +37,15 @@ assert_eq!(results[0].1, 0.0); // distance (inside the box)
 `SearchParams::overretrieve` controls the over-retrieval factor (default 10x).
 Increasing it trades query latency for recall.
 
+## Updatable index (`store` feature)
+
+`store::UpdatableIndex` wraps the region index in a durable, segmented store
+([`segstore`](https://crates.io/crates/segstore)): incremental add/delete, a
+write-ahead log, checkpoint, compaction, and crash recovery. Each segment is a
+cached `RegionIndex` (rebuilt only on mutation, not per query), searched and
+merged across segments; like the underlying HNSW the merged result is
+approximate. Opt-in; the default build does not depend on segstore.
+
 ## Recall
 
 Recall@10 measured against exhaustive ground truth on synthetic box datasets.
