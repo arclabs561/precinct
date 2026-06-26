@@ -36,3 +36,7 @@ pub mod io;
 pub mod index;
 #[cfg(feature = "index")]
 pub use index::{Error, IndexParams, RegionIndex, SearchParams};
+
+/// Updatable, durable multi-segment region-ANN index via segstore (`store` feature).
+#[cfg(feature = "store")]
+pub mod store;
