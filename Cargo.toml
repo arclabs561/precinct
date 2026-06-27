@@ -20,7 +20,7 @@ thiserror = "2.0"
 # Point ANN backend (optional -- enables RegionIndex)
 vicinity = { version = "0.8", optional = true, default-features = false, features = ["hnsw"] }
 serde = { version = "1", features = ["derive"], optional = true }
-segstore = { version = "0.1", optional = true }
+segstore = { version = "0.2", optional = true }
 durability = { version = "0.6", optional = true }
 
 [dev-dependencies]
