@@ -21,11 +21,17 @@ pub enum Error {
 /// general concept be retrieved for a query it encloses even when its center is
 /// far away, the case a plain center-ANN misses.
 ///
-/// The index answers three families of query:
-/// - similarity: [`search`](Self::search) (k nearest regions to a point),
+/// The index answers the region query algebra:
+/// - similarity: [`search`](Self::search) (k nearest regions to a point) and
+///   [`nearest_region`](Self::nearest_region) (k regions nearest a query region),
 /// - membership: [`containing`](Self::containing) (regions enclosing a point),
 /// - subsumption: [`subsumers`](Self::subsumers) / [`subsumees`](Self::subsumees)
-///   (regions that contain / are contained by a query region).
+///   (regions that contain / are contained by a query region),
+/// - overlap: [`overlapping`](Self::overlapping) (regions intersecting a query
+///   region, the conjunction primitive).
+///
+/// Retrieved regions can be scored with [`Region::log_volume`] (generality) and
+/// [`Region::entailment_prob`] (soft subsumption probability).
 ///
 /// # Type parameter
 ///
@@ -280,6 +286,74 @@ impl<R: Region> RegionIndex<R> {
             .collect()
     }
 
+    /// Regions that intersect `query` (`S ∩ query ≠ ∅`), the overlap query.
+    ///
+    /// Candidates come from the regions nearest `query`'s center plus those that
+    /// enclose it, filtered by [`Region::overlaps_region`]. Approximate (recall
+    /// bounded by `overretrieve`); for a guarantee use
+    /// [`overlapping_exhaustive`](Self::overlapping_exhaustive).
+    pub fn overlapping(&self, query: &R, params: SearchParams) -> Result<Vec<u32>, Error> {
+        if !self.built {
+            return Err(Error::NotBuilt);
+        }
+        let SearchParams { ef, overretrieve } = params;
+        let fetch_k = self
+            .regions
+            .len()
+            .min(ef.saturating_mul(overretrieve).max(1));
+        let mut cand: std::collections::HashSet<u32> = self
+            .center
+            .search(query.center(), fetch_k, ef)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        // Large regions that overlap may not be center-near; catch the ones that
+        // enclose the query's center via the lift.
+        cand.extend(self.containing(query.center(), SearchParams { ef, overretrieve })?);
+        Ok(cand
+            .into_iter()
+            .filter(|id| self.regions[self.id_to_pos[id]].overlaps_region(query))
+            .collect())
+    }
+
+    /// Exhaustive overlap query -- checks every region. `O(n)`, guaranteed.
+    pub fn overlapping_exhaustive(&self, query: &R) -> Vec<u32> {
+        self.ids
+            .iter()
+            .enumerate()
+            .filter(|(pos, _)| query.overlaps_region(&self.regions[*pos]))
+            .map(|(_, &id)| id)
+            .collect()
+    }
+
+    /// The `k` regions most similar to `query`, by center distance.
+    ///
+    /// Region-to-region nearest neighbor (a concept's nearest concepts), via the
+    /// center index reranked by center L2. Returns `(id, center_distance)`.
+    pub fn nearest_region(
+        &self,
+        query: &R,
+        k: usize,
+        params: SearchParams,
+    ) -> Result<Vec<SearchResult>, Error> {
+        if !self.built {
+            return Err(Error::NotBuilt);
+        }
+        let fetch_k = k.saturating_mul(params.overretrieve).max(k);
+        let candidates = self.center.search(query.center(), fetch_k, params.ef)?;
+        let mut reranked: Vec<SearchResult> = candidates
+            .into_iter()
+            .map(|(id, _)| {
+                let r = &self.regions[self.id_to_pos[&id]];
+                (id, l2(query.center(), r.center()))
+            })
+            .collect();
+        reranked
+            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        reranked.truncate(k);
+        Ok(reranked)
+    }
+
     /// Exhaustive containment query -- checks every region. `O(n)`, guaranteed.
     pub fn containing_exhaustive(&self, point: &[f32]) -> Vec<u32> {
         self.id_to_pos
@@ -354,6 +428,15 @@ impl<R: Region> RegionIndex<R> {
 /// Power-distance lift of a ball `(c, r)`: `u = (2c, r^2 - ||c||^2)` in `R^(d+1)`,
 /// so `u · (p, 1) = 2 p·c + r^2 - ||c||^2` and `argmax_u` is the min power
 /// distance.
+/// L2 distance between two equal-length vectors.
+fn l2(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
 fn lift_region(center: &[f32], radius: f32) -> Vec<f32> {
     let mut u = Vec::with_capacity(center.len() + 1);
     let mut norm_c_sq = 0.0f32;
@@ -529,6 +612,58 @@ mod tests {
         );
         assert!(!down.contains(&0), "box 0 is larger, not subsumed");
         assert!(!down.contains(&3), "box 3 is disjoint");
+    }
+
+    #[test]
+    fn overlapping_and_nearest_region() {
+        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+        // A cluster of overlapping boxes near the origin, and far decoys.
+        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![4.0, 4.0]))
+            .unwrap();
+        idx.add(1, AxisBox::new(vec![3.0, 3.0], vec![7.0, 7.0]))
+            .unwrap(); // overlaps 0
+        idx.add(2, AxisBox::new(vec![6.0, 6.0], vec![8.0, 8.0]))
+            .unwrap(); // overlaps 1, not 0
+        idx.add(3, AxisBox::new(vec![50.0, 50.0], vec![51.0, 51.0]))
+            .unwrap(); // far
+        for i in 4..18u32 {
+            let o = 60.0 + i as f32 * 3.0;
+            idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]))
+                .unwrap();
+        }
+        idx.build().unwrap();
+
+        let probe = AxisBox::new(vec![2.0, 2.0], vec![3.5, 3.5]); // overlaps 0 and 1
+        let params = || SearchParams {
+            ef: 64,
+            overretrieve: 8,
+        };
+
+        let mut ov = idx.overlapping(&probe, params()).unwrap();
+        ov.sort_unstable();
+        assert!(
+            ov.contains(&0) && ov.contains(&1),
+            "probe overlaps 0 and 1; got {ov:?}"
+        );
+        assert!(!ov.contains(&3), "box 3 is far");
+        // Matches exhaustive.
+        let mut exh = idx.overlapping_exhaustive(&probe);
+        exh.sort_unstable();
+        assert_eq!(ov, exh, "indexed overlap must match exhaustive");
+
+        // nearest_region to a box near the origin cluster returns 0/1/2 first.
+        let near = idx
+            .nearest_region(&AxisBox::new(vec![1.0, 1.0], vec![2.0, 2.0]), 3, params())
+            .unwrap();
+        let ids: std::collections::HashSet<u32> = near.iter().map(|(id, _)| *id).collect();
+        assert!(
+            ids.contains(&0),
+            "nearest region to origin cluster includes box 0"
+        );
+        assert!(!ids.contains(&3), "far box 3 is not among the 3 nearest");
+        for w in near.windows(2) {
+            assert!(w[0].1 <= w[1].1, "nearest_region not sorted");
+        }
     }
 
     #[test]

@@ -33,6 +33,33 @@ pub trait Region {
     fn contains_region(&self, other: &Self) -> bool
     where
         Self: Sized;
+
+    /// Whether this region intersects `other` (`self ∩ other ≠ ∅`).
+    ///
+    /// The overlap predicate: the conjunction primitive for region queries (two
+    /// concepts share members). Symmetric: `a.overlaps_region(b) ==
+    /// b.overlaps_region(a)`.
+    fn overlaps_region(&self, other: &Self) -> bool
+    where
+        Self: Sized;
+
+    /// Natural log of the region's volume.
+    ///
+    /// A measure of generality: a larger region is a more general concept. Log
+    /// space because volume underflows to zero in high dimensions.
+    fn log_volume(&self) -> f32;
+
+    /// The probability that `self` subsumes `other`, `P(self ⊒ other) =
+    /// vol(self ∩ other) / vol(other)`.
+    ///
+    /// The soft form of [`contains_region`](Self::contains_region): `1.0` when
+    /// `self` fully contains `other`, `0.0` when they are disjoint, in between
+    /// for partial overlap. This is the box-lattice conditional probability
+    /// (Vilnis et al. 2018); exact for boxes, an approximation for balls (the
+    /// exact lens volume needs the regularized incomplete beta function).
+    fn entailment_prob(&self, other: &Self) -> f32
+    where
+        Self: Sized;
 }
 
 // ─── AxisBox ─────────────────────────────────────────────────────────────────
@@ -182,6 +209,42 @@ impl Region for AxisBox {
         self.min.iter().zip(other.min.iter()).all(|(s, o)| *s <= *o)
             && self.max.iter().zip(other.max.iter()).all(|(s, o)| *s >= *o)
     }
+
+    fn overlaps_region(&self, other: &Self) -> bool {
+        // Boxes intersect iff their intervals overlap in every dimension.
+        self.min
+            .iter()
+            .zip(self.max.iter())
+            .zip(other.min.iter().zip(other.max.iter()))
+            .all(|((s_lo, s_hi), (o_lo, o_hi))| *s_lo <= *o_hi && *o_lo <= *s_hi)
+    }
+
+    fn log_volume(&self) -> f32 {
+        // Sum of log side-lengths; the inherent method does the same.
+        AxisBox::log_volume(self)
+    }
+
+    fn entailment_prob(&self, other: &Self) -> f32 {
+        // vol(self ∩ other) / vol(other), in log space then exponentiated.
+        // The intersection box is [max(lo), min(hi)] per dimension; if empty in
+        // any dimension the regions are disjoint and the probability is 0.
+        let mut inter_log_vol = 0.0f32;
+        for (((s_lo, s_hi), o_lo), o_hi) in self
+            .min
+            .iter()
+            .zip(self.max.iter())
+            .zip(other.min.iter())
+            .zip(other.max.iter())
+        {
+            let lo = s_lo.max(*o_lo);
+            let hi = s_hi.min(*o_hi);
+            if hi <= lo {
+                return 0.0; // disjoint in this dimension
+            }
+            inter_log_vol += (hi - lo).ln();
+        }
+        (inter_log_vol - Region::log_volume(other)).exp().min(1.0)
+    }
 }
 
 // ─── Ball ────────────────────────────────────────────────────────────────────
@@ -238,20 +301,114 @@ impl Region for Ball {
 
     fn contains_region(&self, other: &Self) -> bool {
         // self ⊇ other iff ||c_self - c_other|| + r_other <= r_self.
-        let center_dist: f32 = self
-            .center
-            .iter()
-            .zip(other.center.iter())
-            .map(|(s, o)| (s - o).powi(2))
-            .sum::<f32>()
-            .sqrt();
-        center_dist + other.radius <= self.radius
+        center_dist(&self.center, &other.center) + other.radius <= self.radius
     }
+
+    fn overlaps_region(&self, other: &Self) -> bool {
+        // Balls intersect iff their centers are within the sum of radii.
+        center_dist(&self.center, &other.center) <= self.radius + other.radius
+    }
+
+    fn log_volume(&self) -> f32 {
+        // ln vol of a d-ball: (d/2) ln(pi) + d ln(r) - ln(Gamma(d/2 + 1)).
+        let d = self.center.len() as f64;
+        let r = self.radius as f64;
+        let lv = 0.5 * d * std::f64::consts::PI.ln() + d * r.ln() - lgamma(0.5 * d + 1.0);
+        lv as f32
+    }
+
+    fn entailment_prob(&self, other: &Self) -> f32 {
+        // Approximate (exact lens volume needs the regularized incomplete beta):
+        // 1 if self contains other, 0 if disjoint, else a monotone interpolation.
+        let cd = center_dist(&self.center, &other.center);
+        if other.radius == 0.0 {
+            return if cd <= self.radius { 1.0 } else { 0.0 };
+        }
+        if cd + other.radius <= self.radius {
+            1.0
+        } else if cd >= self.radius + other.radius {
+            0.0
+        } else {
+            ((self.radius + other.radius - cd) / (2.0 * other.radius)).clamp(0.0, 1.0)
+        }
+    }
+}
+
+/// L2 distance between two region centers.
+fn center_dist(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
+/// `ln(Gamma(x))` for `x >= 0.5` via the Lanczos approximation (g = 7).
+fn lgamma(x: f64) -> f64 {
+    const C: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    let g = 7.0;
+    let x = x - 1.0;
+    let mut a = C[0];
+    let t = x + g + 0.5;
+    for (i, &c) in C.iter().enumerate().skip(1) {
+        a += c / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_overlap_predicate() {
+        let a = AxisBox::new(vec![0.0, 0.0], vec![2.0, 2.0]);
+        let touching = AxisBox::new(vec![1.0, 1.0], vec![3.0, 3.0]);
+        let disjoint = AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]);
+        assert!(a.overlaps_region(&touching));
+        assert!(touching.overlaps_region(&a)); // symmetric
+        assert!(!a.overlaps_region(&disjoint));
+        // Containment implies overlap.
+        let inner = AxisBox::new(vec![0.5, 0.5], vec![1.0, 1.0]);
+        assert!(a.overlaps_region(&inner));
+    }
+
+    #[test]
+    fn box_log_volume_and_entailment() {
+        let outer = AxisBox::new(vec![0.0, 0.0], vec![4.0, 4.0]); // area 16
+        let inner = AxisBox::new(vec![1.0, 1.0], vec![3.0, 3.0]); // area 4
+        assert!((Region::log_volume(&outer) - 16.0_f32.ln()).abs() < 1e-5);
+        // outer fully contains inner -> P(outer ⊒ inner) = 1.
+        assert!((outer.entailment_prob(&inner) - 1.0).abs() < 1e-5);
+        // inner subsumes outer only fractionally: vol(inner∩outer)/vol(outer) = 4/16.
+        assert!((inner.entailment_prob(&outer) - 0.25).abs() < 1e-5);
+        // disjoint -> 0.
+        let far = AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]);
+        assert_eq!(outer.entailment_prob(&far), 0.0);
+    }
+
+    #[test]
+    fn ball_overlap_and_entailment() {
+        let outer = Ball::new(vec![0.0, 0.0], 5.0);
+        let inner = Ball::new(vec![1.0, 0.0], 1.0);
+        let disjoint = Ball::new(vec![20.0, 0.0], 1.0);
+        assert!(outer.overlaps_region(&inner));
+        assert!(!outer.overlaps_region(&disjoint));
+        assert_eq!(outer.entailment_prob(&inner), 1.0); // outer contains inner
+        assert_eq!(outer.entailment_prob(&disjoint), 0.0); // disjoint
+                                                           // Larger ball has larger log-volume.
+        assert!(Region::log_volume(&outer) > Region::log_volume(&inner));
+    }
 
     #[test]
     fn box_contains_interior_point() {

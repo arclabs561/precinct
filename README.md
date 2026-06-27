@@ -16,6 +16,13 @@ three queries over a region corpus.
   a center-only index misses.
 - **subsumption** (`subsumers` / `subsumees`) -- the regions that contain, or are
   contained by, a query region (a concept's hypernyms / hyponyms).
+- **overlap** (`overlapping`) -- the regions that intersect a query region (the
+  conjunction primitive: concepts sharing members).
+- **region similarity** (`nearest_region`) -- the regions nearest a query region.
+
+Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
+`Region::entailment_prob` (the soft subsumption probability
+`vol(self ∩ other) / vol(other)`, the box-lattice conditional).
 
 ## Install
 
