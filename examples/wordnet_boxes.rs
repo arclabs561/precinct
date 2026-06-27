@@ -116,7 +116,8 @@ fn main() {
         ef: 64,
         overretrieve: 16,
     };
-    let (mut subsumer_hits, mut center_hits, mut total) = (0usize, 0usize, 0usize);
+    let min_prob = 0.3;
+    let (mut strict, mut soft, mut member, mut total) = (0usize, 0usize, 0usize, 0usize);
     for (child, parent) in &edges {
         let (Some(&cid), Some(&pid)) = (id_of.get(child), id_of.get(parent)) else {
             continue;
@@ -125,26 +126,48 @@ fn main() {
             continue;
         };
         total += 1;
-        let subs = idx.subsumers(cbox, params()).unwrap_or_default();
-        if subs.contains(&pid) {
-            subsumer_hits += 1;
+        if idx
+            .subsumers(cbox, params())
+            .unwrap_or_default()
+            .contains(&pid)
+        {
+            strict += 1;
         }
-        // Also: is the parent among the regions enclosing the child's center?
-        let enc = idx.containing(cbox.center(), params()).unwrap_or_default();
-        if enc.contains(&pid) {
-            center_hits += 1;
+        if idx
+            .subsumers_soft(cbox, min_prob, params())
+            .unwrap_or_default()
+            .iter()
+            .any(|(id, _)| *id == pid)
+        {
+            soft += 1;
+        }
+        if idx
+            .containing(cbox.center(), params())
+            .unwrap_or_default()
+            .contains(&pid)
+        {
+            member += 1;
         }
     }
+    let pct = |h: usize| h as f64 / total as f64 * 100.0;
+    println!("hypernym-ancestor recall over {total} edges:");
     println!(
-        "hypernym-ancestor recall over {total} edges:\n  membership  (parent box encloses child center): {:.0}%\n  strict containment (parent box ⊇ child box):     {:.0}%",
-        center_hits as f64 / total as f64 * 100.0,
-        subsumer_hits as f64 / total as f64 * 100.0,
+        "  membership  (parent encloses child center):     {:.0}%",
+        pct(member)
     );
     println!(
-        "The trained Gumbel boxes nest *softly* -- a child's center lands inside its\n\
-         parent, but the child's full box pokes outside -- so membership recovers the\n\
-         is-a ancestor while strict box-containment does not. For trained (soft)\n\
-         embeddings, `containing` is the right ancestor query, not `subsumers`."
+        "  soft subsumers (entailment_prob >= {min_prob}):       {:.0}%",
+        pct(soft)
+    );
+    println!(
+        "  strict subsumers (parent box ⊇ child box):      {:.0}%",
+        pct(strict)
+    );
+    println!(
+        "The trained Gumbel boxes nest *softly*: a child's center lands inside its\n\
+         parent, but the child's full box pokes outside. So membership and the soft\n\
+         subsumption query recover the is-a ancestor while strict box-containment\n\
+         does not -- the index is sound; the trained embedding is soft."
     );
 }
 

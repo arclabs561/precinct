@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.8.0] - 2026-06-27
+
+### Added
+
+- `RegionIndex::subsumers_soft(query, min_prob)`: soft subsumption, returning
+  regions with `entailment_prob(query) >= min_prob` ranked by probability.
+  Trained region embeddings (Gumbel boxes) nest *softly* -- a child's center
+  falls inside its parent but its full box pokes out -- so strict `subsumers` is
+  0% on real trained WordNet boxes while the soft form (and membership) recover
+  the is-a ancestor 98%. `min_prob = 1.0` reduces to strict containment.
+- `examples/wordnet_boxes`: in-domain validation on subsume's trained WordNet box
+  checkpoint, reporting membership / soft / strict ancestor recall (98/98/0%).
+
 ## [0.7.0] - 2026-06-27
 
 ### Added
