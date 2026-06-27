@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.8.2] - 2026-06-27
+
+### Added
+
+- `store::UpdatableIndex::compact_tiers()`: one round of size-tiered compaction
+  (merge similarly-sized segments), keeping segment count bounded without a full
+  `compact()`.
+
 ## [0.8.1] - 2026-06-27
 
 ### Added
