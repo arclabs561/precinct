@@ -23,6 +23,7 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
@@ -54,12 +55,18 @@ impl Store for BoxBacking {
             .cloned()
             .collect()
     }
+
+    fn segment_len(&self, seg: &Vec<(u32, AxisBox)>) -> usize {
+        seg.len()
+    }
 }
 
-/// Cached per-segment region indexes, valid for a given mutation generation.
+/// Per-segment region indexes keyed by the segment's stable `Arc` identity. Because
+/// segstore keeps an unchanged segment's `Arc` across mutations, a sealed add only
+/// builds the one new segment's index (the rest are reused) instead of rebuilding
+/// the whole corpus -- the dominant cost for an interactive add-then-search loop.
 struct Cache {
-    generation: u64,
-    segments: Vec<Option<RegionIndex<AxisBox>>>,
+    by_ptr: HashMap<usize, Option<RegionIndex<AxisBox>>>,
 }
 
 /// An updatable, durable multi-segment region-ANN index over axis-aligned boxes.
@@ -69,7 +76,6 @@ pub struct UpdatableIndex {
     m: usize,
     m_max: usize,
     ef_construction: usize,
-    generation: u64,
     cache: RefCell<Cache>,
 }
 
@@ -89,10 +95,8 @@ impl UpdatableIndex {
             m: params.m,
             m_max: params.m_max,
             ef_construction: params.ef_construction,
-            generation: 0,
             cache: RefCell::new(Cache {
-                generation: u64::MAX,
-                segments: Vec::new(),
+                by_ptr: HashMap::new(),
             }),
         })
     }
@@ -108,22 +112,24 @@ impl UpdatableIndex {
                 self.dim
             )));
         }
+        // A sealed add introduces a new segment (a new Arc identity); existing
+        // segments keep theirs, so the cache reuses them and builds only the new one.
         self.inner.add(id, region)?;
-        self.generation += 1;
         Ok(())
     }
 
     /// Tombstone a region.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
         self.inner.delete(id)?;
-        self.generation += 1;
+        // A tombstone changes the live filter used to build every segment's index,
+        // so invalidate the cache (deletes are far rarer than adds).
+        self.cache.borrow_mut().by_ptr.clear();
         Ok(())
     }
 
     /// Merge segments (dropping tombstoned regions) and persist a checkpoint.
     pub fn compact(&mut self) -> PersistenceResult<()> {
         self.inner.compact()?;
-        self.generation += 1;
         Ok(())
     }
 
@@ -135,13 +141,25 @@ impl UpdatableIndex {
     /// The `k` nearest regions to the query point, by point-to-region distance,
     /// over the live corpus. Returns `(region_id, distance)`.
     pub fn search(&self, query: &[f32], k: usize, params: SearchParams) -> Vec<(u32, f32)> {
-        self.refresh_cache();
         let SearchParams { ef, overretrieve } = params;
         let sp = || SearchParams { ef, overretrieve };
         let mut cand: Vec<(u32, f32)> = Vec::new();
         {
-            let cache = self.cache.borrow();
-            for idx in cache.segments.iter().flatten() {
+            let segs = self.inner.segments();
+            let mut cache = self.cache.borrow_mut();
+            // Drop cached indexes for segments no longer present (post-compaction).
+            let current: std::collections::HashSet<usize> =
+                segs.iter().map(|a| Arc::as_ptr(a) as usize).collect();
+            cache.by_ptr.retain(|key, _| current.contains(key));
+            // Build only segments not already cached (i.e. new ones).
+            for seg in segs {
+                let key = Arc::as_ptr(seg) as usize;
+                cache
+                    .by_ptr
+                    .entry(key)
+                    .or_insert_with(|| self.build_live_index(&seg[..]));
+            }
+            for idx in cache.by_ptr.values().flatten() {
                 cand.extend(idx.search(query, k, sp()).unwrap_or_default());
             }
         }
@@ -153,18 +171,6 @@ impl UpdatableIndex {
         cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
         cand.truncate(k);
         cand
-    }
-
-    fn refresh_cache(&self) {
-        let mut cache = self.cache.borrow_mut();
-        if cache.generation == self.generation {
-            return;
-        }
-        cache.segments.clear();
-        for seg in self.inner.segments() {
-            cache.segments.push(self.build_live_index(seg));
-        }
-        cache.generation = self.generation;
     }
 
     /// Build a per-segment `RegionIndex` over the live regions of `batch` (None if
