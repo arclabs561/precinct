@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+
+# Example datasets (fetched via scripts/)
+/data/

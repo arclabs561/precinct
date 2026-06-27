@@ -41,14 +41,31 @@ Increasing it trades query latency for recall.
 
 `store::UpdatableIndex` wraps the region index in a durable, segmented store
 ([`segstore`](https://crates.io/crates/segstore)): incremental add/delete, a
-write-ahead log, checkpoint, compaction, and crash recovery. Each segment is a
-cached `RegionIndex` (rebuilt only on mutation, not per query), searched and
-merged across segments; like the underlying HNSW the merged result is
-approximate. Opt-in; the default build does not depend on segstore.
+write-ahead log, checkpoint, compaction, and crash recovery. Per-segment
+`RegionIndex`es are cached by stable segment identity, so a mutation rebuilds
+only the new or changed segments, not the whole corpus; segments are searched
+and merged, and like the underlying HNSW the merged result is approximate.
+Opt-in; the default build does not depend on segstore.
 
 ## Recall
 
-Recall@10 measured against exhaustive ground truth on synthetic box datasets.
+Recall@k measured against an exhaustive point-to-region scan.
+
+Real data, `examples/glove_concepts` (50K GloVe-6B-50d vectors clustered into
+5,000 concept boxes, the bounding box of each cluster of related words):
+
+| Over-retrieve | Recall@10 |
+|---|---|
+| 10x | 92.1% |
+| 50x | 99.3% |
+
+Real data, `examples/geo_regions` (177 Natural Earth country boxes, `[lon, lat]`
+point queries): recall@3 92.9% over a world grid, and the nearest region by
+surface distance correctly diverges from the nearest by center (a South Pacific
+point resolves to Chile, far from any centroid). Fetch either dataset with the
+matching `scripts/fetch_*.sh`.
+
+Synthetic box datasets (uniform-random centers, varied widths, `examples/recall_gap`):
 
 | Scenario | Recall@10 (10x) | Recall@10 (50x) |
 |---|---|---|
