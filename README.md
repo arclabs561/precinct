@@ -2,16 +2,26 @@
 
 Approximate nearest-neighbor search over region embeddings (boxes, balls).
 
-Point-based ANN indices assume queries and database entries are single vectors.
-Region embeddings -- axis-aligned boxes, balls -- represent concepts as volumes
-in embedding space. precinct bridges this gap by indexing region centers in an
-HNSW graph and reranking candidates with the true point-to-region distance.
+Point-ANN indices (HNSW, FAISS) index points; R-trees index regions but collapse
+above ~10 dimensions. Region embeddings -- axis-aligned boxes, balls -- represent
+concepts as volumes, and trained ones live in 64-200 dimensions, so neither tool
+fits. precinct is the high-dimensional index for regions-as-objects: it answers
+three queries over a region corpus.
+
+- **nearest** -- the `k` regions closest to a point, by true point-to-region
+  distance (center index + rerank).
+- **membership** (`containing`) -- the regions that enclose a point. Candidates
+  come from a *power-distance lift* that ranks regions by extent, so a large
+  general concept is found even when its center is far from the point -- the case
+  a center-only index misses.
+- **subsumption** (`subsumers` / `subsumees`) -- the regions that contain, or are
+  contained by, a query region (a concept's hypernyms / hyponyms).
 
 ## Install
 
 ```toml
 [dependencies]
-precinct = "0.3"
+precinct = "0.5"
 ```
 
 or `cargo add precinct`.
@@ -23,15 +33,21 @@ use precinct::{AxisBox, RegionIndex, SearchParams};
 
 // Build an index of 2-d boxes
 let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![1.0, 1.0]));
-idx.add(1, AxisBox::new(vec![5.0, 5.0], vec![6.0, 6.0]));
-idx.add(2, AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]));
+idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // general concept
+idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0]));   // specific concept
+idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0]));
 idx.build().unwrap();
 
-// Search: retrieve 1 nearest region to a query point
-let results = idx.search(&[0.5, 0.5], 1, Default::default()).unwrap();
-assert_eq!(results[0].0, 0);   // region id
-assert_eq!(results[0].1, 0.0); // distance (inside the box)
+// nearest region to a point inside only the general concept
+let nearest = idx.search(&[1.0, 1.0], 1, Default::default()).unwrap();
+assert_eq!(nearest[0].0, 0);
+
+// membership: regions enclosing [5, 5]  -> {0, 1}
+let enclosing = idx.containing(&[5.0, 5.0], Default::default()).unwrap();
+
+// subsumption: regions that contain a small probe box -> the more general concepts
+let probe = AxisBox::new(vec![4.5, 4.5], vec![5.5, 5.5]);
+let subsumers = idx.subsumers(&probe, Default::default()).unwrap();
 ```
 
 `SearchParams::overretrieve` controls the over-retrieval factor (default 10x).

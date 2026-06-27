@@ -16,6 +16,23 @@ pub trait Region {
 
     /// Whether `point` lies inside (or on the boundary of) this region.
     fn contains(&self, point: &[f32]) -> bool;
+
+    /// A ball `(center, radius)` that encloses this region.
+    ///
+    /// Used as a conservative proxy for the power-distance lift in
+    /// [`RegionIndex`](crate::RegionIndex): `self ⊆ bounding_ball`, so any point
+    /// inside `self` is inside the bounding ball. The tighter the ball, the less
+    /// over-retrieval the rerank pays for. For a `Ball` this is exact.
+    fn bounding_ball(&self) -> (Vec<f32>, f32);
+
+    /// Whether this region fully contains `other` (`self ⊇ other`).
+    ///
+    /// The region-to-region subsumption predicate: in a trained ontology,
+    /// `self.contains_region(other)` means `self` is a more general concept than
+    /// `other`.
+    fn contains_region(&self, other: &Self) -> bool
+    where
+        Self: Sized;
 }
 
 // ─── AxisBox ─────────────────────────────────────────────────────────────────
@@ -143,6 +160,28 @@ impl Region for AxisBox {
             .zip(self.max.iter())
             .all(|((p, lo), hi)| *p >= *lo && *p <= *hi)
     }
+
+    fn bounding_ball(&self) -> (Vec<f32>, f32) {
+        // The sphere through the box corners: center, radius = ||half-widths||_2.
+        let radius = self
+            .min
+            .iter()
+            .zip(self.max.iter())
+            .map(|(lo, hi)| {
+                let h = (hi - lo) * 0.5;
+                h * h
+            })
+            .sum::<f32>()
+            .sqrt();
+        (self.center.clone(), radius)
+    }
+
+    fn contains_region(&self, other: &Self) -> bool {
+        // self ⊇ other iff self.min <= other.min and self.max >= other.max,
+        // componentwise.
+        self.min.iter().zip(other.min.iter()).all(|(s, o)| *s <= *o)
+            && self.max.iter().zip(other.max.iter()).all(|(s, o)| *s >= *o)
+    }
 }
 
 // ─── Ball ────────────────────────────────────────────────────────────────────
@@ -190,6 +229,23 @@ impl Region for Ball {
             .map(|(c, p)| (c - p).powi(2))
             .sum();
         dist_sq <= self.radius * self.radius
+    }
+
+    fn bounding_ball(&self) -> (Vec<f32>, f32) {
+        // A ball is its own bounding ball.
+        (self.center.clone(), self.radius)
+    }
+
+    fn contains_region(&self, other: &Self) -> bool {
+        // self ⊇ other iff ||c_self - c_other|| + r_other <= r_self.
+        let center_dist: f32 = self
+            .center
+            .iter()
+            .zip(other.center.iter())
+            .map(|(s, o)| (s - o).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        center_dist + other.radius <= self.radius
     }
 }
 
