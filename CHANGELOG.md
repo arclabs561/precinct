@@ -5,6 +5,28 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.6.0] - 2026-06-27
+
+Completes the region query algebra: beyond containment, the serving interface
+now covers overlap, region-to-region similarity, and the box scoring primitives.
+
+### Added
+
+- `RegionIndex::overlapping(region)` / `overlapping_exhaustive` -- the overlap
+  query (regions intersecting a query region, the conjunction primitive).
+- `RegionIndex::nearest_region(region, k)` -- region-to-region nearest neighbor
+  (a concept's nearest concepts), by center distance.
+- `Region::overlaps_region` (intersection predicate), `Region::log_volume`
+  (generality), and `Region::entailment_prob` (soft subsumption probability
+  `vol(self ∩ other) / vol(other)`, the box-lattice conditional; exact for boxes,
+  approximate for balls). Implemented for `AxisBox` and `Ball`.
+
+### Breaking
+
+- `Region` requires three more methods: `overlaps_region`, `log_volume`,
+  `entailment_prob`. Custom `Region` implementations must add them; `AxisBox` and
+  `Ball` are covered.
+
 ## [0.5.0] - 2026-06-27
 
 precinct becomes a high-dimensional index for regions-as-objects (the serving
