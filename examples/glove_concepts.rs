@@ -19,7 +19,9 @@
 use std::time::Instant;
 
 use clump::Kmeans;
-use precinct::{box_to_point_l2, AxisBox, IndexParams, RegionIndex, SearchParams};
+use precinct::{box_to_point_l2, AxisBox, IndexParams, Region, RegionIndex, SearchParams};
+use vicinity::hnsw::HNSWIndex;
+use vicinity::DistanceMetric;
 
 const GLOVE: &str = "data/glove.6B.50d.txt";
 const N_WORDS: usize = 50_000; // top-N most frequent (GloVe is frequency-sorted)
@@ -68,12 +70,24 @@ fn main() {
         boxes.len()
     );
 
-    // Index the regions.
+    // precinct: region-aware index (lift + true-distance rerank).
     let mut idx = RegionIndex::<AxisBox>::new(dim, IndexParams::default()).expect("index");
     for (i, b) in boxes.iter().enumerate() {
         idx.add(i as u32, b.clone()).expect("add");
     }
     idx.build().expect("build");
+
+    // Baseline: plain point-ANN (vicinity HNSW) over the box CENTERS -- what you
+    // get without precinct, treating each region as its center point. This is the
+    // realistic proxy to beat; brute force is only the correctness oracle.
+    let mut naive = HNSWIndex::builder(dim)
+        .metric(DistanceMetric::L2)
+        .build()
+        .expect("hnsw");
+    for (i, b) in boxes.iter().enumerate() {
+        naive.add(i as u32, b.center().to_vec()).expect("add");
+    }
+    naive.build().expect("build");
 
     // Query with a deterministic sample of the corpus points.
     let queries: Vec<&Vec<f32>> = vectors
@@ -82,30 +96,44 @@ fn main() {
         .take(N_QUERIES)
         .collect();
 
+    println!("recall@{K} vs exhaustive region search (precinct = region-aware, naive = point-ANN on centers):");
     for over in [10usize, 50] {
+        let ef = 100;
+        let fetch = K * over;
+        let (mut p_hit, mut n_hit, mut total) = (0usize, 0usize, 0usize);
         let t = Instant::now();
-        let mut hit = 0usize;
-        let mut total = 0usize;
         for q in &queries {
             let truth = exhaustive_top_k(&boxes, q, K);
             let params = SearchParams {
-                ef: 100,
+                ef,
                 overretrieve: over,
             };
-            let got = idx.search(q, K, params).expect("search");
-            let got_ids: std::collections::HashSet<u32> = got.iter().map(|(id, _)| *id).collect();
+            let p_ids: std::collections::HashSet<u32> = idx
+                .search(q, K, params)
+                .expect("search")
+                .iter()
+                .map(|(id, _)| *id)
+                .collect();
+            // Naive: nearest box centers, no region-distance rerank.
+            let n_ids: std::collections::HashSet<u32> = naive
+                .search(q, fetch, ef)
+                .expect("naive")
+                .into_iter()
+                .take(K)
+                .map(|(id, _)| id)
+                .collect();
             for (id, _) in &truth {
-                if got_ids.contains(id) {
-                    hit += 1;
-                }
+                p_hit += usize::from(p_ids.contains(id));
+                n_hit += usize::from(n_ids.contains(id));
                 total += 1;
             }
         }
-        let recall = hit as f64 / total as f64;
         let qps = queries.len() as f64 / t.elapsed().as_secs_f64();
         println!(
-            "recall@{K} ({over}x over-retrieve): {:.1}%   ({qps:.0} q/s)",
-            recall * 100.0
+            "  {over:>2}x over-retrieve:  precinct {:.1}%   naive-center-ANN {:.1}%   (gap {:+.1} pts, {qps:.0} q/s)",
+            p_hit as f64 / total as f64 * 100.0,
+            n_hit as f64 / total as f64 * 100.0,
+            (p_hit as f64 - n_hit as f64) / total as f64 * 100.0,
         );
     }
 }

@@ -73,15 +73,21 @@ Opt-in; the default build does not depend on segstore.
 
 ## Recall
 
-Recall@k measured against an exhaustive point-to-region scan.
+Recall@k against an exhaustive point-to-region scan (the correctness oracle),
+reported next to the realistic baseline you would use without precinct: plain
+point-ANN over the region *centers*, which ignores extent.
 
 Real data, `examples/glove_concepts` (50K GloVe-6B-50d vectors clustered into
 5,000 concept boxes, the bounding box of each cluster of related words):
 
-| Over-retrieve | Recall@10 |
-|---|---|
-| 10x | 92.1% |
-| 50x | 99.3% |
+| Over-retrieve | precinct (region-aware) | naive point-ANN on centers |
+|---|---|---|
+| 10x | 92.1% | 46.7% |
+| 50x | 99.3% | 46.7% |
+
+The region-distance rerank roughly doubles recall over ranking by center
+distance; over-retrieve does not help the baseline because its ranking is wrong,
+not just truncated.
 
 Real data, `examples/geo_regions` (177 Natural Earth country boxes, `[lon, lat]`
 point queries): recall@3 92.9% over a world grid, and the nearest region by

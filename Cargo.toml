@@ -29,6 +29,8 @@ rand = "0.9"
 clump = "0.5"
 # GeoJSON parsing for the geographic-region example (examples/geo_regions).
 serde_json = "1"
+# Point-ANN baseline (centers only) for the recall-gap comparison in examples.
+vicinity = { version = "0.8", default-features = false, features = ["hnsw"] }
 
 [features]
 default = ["index"]
