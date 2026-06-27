@@ -5,6 +5,27 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.4.0] - 2026-06-27
+
+### Added
+
+- `examples/glove_concepts`: a recall benchmark on real high-dimensional concept
+  regions (top-50K GloVe-6B-50d vectors clustered into 5,000 bounding boxes via
+  `clump`). recall@10 92.1% (10x over-retrieve), 99.3% (50x). Fetch with
+  `scripts/fetch_glove.sh`.
+- `examples/geo_regions`: nearest-region search over real geographic boxes (177
+  Natural Earth country bounding boxes). Shows the surface-vs-center distinction
+  (a South Pacific point resolves to Chile). Fetch with
+  `scripts/fetch_natural_earth.sh`.
+
+### Changed
+
+- `store::UpdatableIndex` now caches each segment's `RegionIndex` by the
+  segment's stable `Arc` identity (via segstore 0.2), so a mutation rebuilds only
+  the new or changed segments instead of the whole corpus on the next query.
+- Requires `segstore` 0.2 (only affects the optional `store` feature; the on-disk
+  store format changed, so a `store` index written by 0.3.x is not read by 0.4.0).
+
 ## [0.3.1] - 2026-06-26
 
 ### Fixed
