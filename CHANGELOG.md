@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.8.1] - 2026-06-27
+
+### Added
+
+- `store::UpdatableIndex::reclaim(min_live_ratio)` and `space_amplification()`
+  (via the new `Store::live_len`): cheap tombstone reclamation, merging only the
+  delete-heavy segments instead of a full compaction.
+
 ## [0.8.0] - 2026-06-27
 
 ### Added
