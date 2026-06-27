@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.5.0] - 2026-06-27
+
+precinct becomes a high-dimensional index for regions-as-objects (the serving
+layer for trained region embeddings), answering three query families instead of
+one. See `docs/design/region-index.md`.
+
+### Added
+
+- `RegionIndex::containing(point)` -- membership query, now backed by a
+  *power-distance lift*: each region is indexed by a vector whose ranking
+  respects extent, so an enclosing region is found even when its center is far
+  from the query (the case a center-only index misses).
+- `RegionIndex::subsumers(region)` / `subsumees(region)` -- region-to-region
+  subsumption retrieval (a concept's hypernyms / hyponyms), with
+  `subsumers_exhaustive` for ground truth.
+- `Region::bounding_ball()` and `Region::contains_region()` on the trait, with
+  `AxisBox` and `Ball` implementations.
+
+### Changed
+
+- `RegionIndex` now keeps two HNSW graphs: a center graph for `search` (nearest)
+  and a lift graph for `containing` / `subsumers`. Nearest recall is unchanged
+  (GloVe recall@10 92.1% at 10x); routing nearest through the lift would have
+  cost ~4 points, so the queries use separate indexes (~2x graph memory).
+
+### Breaking
+
+- `Region` requires two new methods, `bounding_ball` and `contains_region`. Any
+  custom `Region` implementation must add them; `AxisBox` and `Ball` are covered.
+
 ## [0.4.0] - 2026-06-27
 
 ### Added
