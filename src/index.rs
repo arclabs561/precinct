@@ -272,6 +272,33 @@ impl<R: Region> RegionIndex<R> {
             .collect())
     }
 
+    /// Regions that *softly* subsume `query`: `entailment_prob(query) >= min_prob`,
+    /// returned with their probability, highest first.
+    ///
+    /// Trained region embeddings (Gumbel boxes, etc.) nest *softly* -- a child's
+    /// center falls inside its parent but the child's full region pokes outside --
+    /// so strict [`subsumers`](Self::subsumers) misses real is-a ancestors that
+    /// the soft form recovers (`min_prob = 1.0` reduces to strict containment).
+    /// Candidates come from `containing(query.center())`; the score is the
+    /// box-lattice conditional `vol(S ∩ query) / vol(query)`.
+    pub fn subsumers_soft(
+        &self,
+        query: &R,
+        min_prob: f32,
+        params: SearchParams,
+    ) -> Result<Vec<SearchResult>, Error> {
+        let candidates = self.containing(query.center(), params)?;
+        let mut out: Vec<SearchResult> = candidates
+            .into_iter()
+            .filter_map(|id| {
+                let p = self.regions[self.id_to_pos[&id]].entailment_prob(query);
+                (p >= min_prob).then_some((id, p))
+            })
+            .collect();
+        out.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(out)
+    }
+
     /// Regions subsumed by (fully contained in) `query` (`T ⊆ query`).
     ///
     /// This is the "region-centers inside `query`" direction, which has no clean
@@ -722,6 +749,63 @@ mod tests {
         for w in near.windows(2) {
             assert!(w[0].1 <= w[1].1, "nearest_region not sorted");
         }
+    }
+
+    #[test]
+    fn subsumers_soft_recovers_partial_overlap() {
+        // The trained-embedding case: a query whose center is inside a region but
+        // whose box pokes out. Strict subsumers misses that region; soft recovers
+        // it, thresholded by how much of the query it covers.
+        let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+        idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0]))
+            .unwrap(); // contains query
+        idx.add(1, AxisBox::new(vec![2.0, 2.0], vec![8.0, 8.0]))
+            .unwrap(); // partial
+        for i in 2..16u32 {
+            let o = i as f32 * 4.0;
+            idx.add(i, AxisBox::new(vec![o, o], vec![o + 0.5, o + 0.5]))
+                .unwrap();
+        }
+        idx.build().unwrap();
+
+        let query = AxisBox::new(vec![7.0, 7.0], vec![9.0, 9.0]); // center [8,8]
+        let params = || SearchParams {
+            ef: 64,
+            overretrieve: 8,
+        };
+
+        // Strict: only box 0 fully contains the query.
+        let strict = idx.subsumers(&query, params()).unwrap();
+        assert!(
+            strict.contains(&0) && !strict.contains(&1),
+            "strict: {strict:?}"
+        );
+
+        // Soft: box 1 covers 1/4 of the query (vol([7,7]-[8,8]) / vol([7,7]-[9,9])).
+        let soft_lo: Vec<u32> = idx
+            .subsumers_soft(&query, 0.2, params())
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            soft_lo.contains(&0) && soft_lo.contains(&1),
+            "soft@0.2: {soft_lo:?}"
+        );
+        let soft_hi: Vec<u32> = idx
+            .subsumers_soft(&query, 0.5, params())
+            .unwrap()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert!(
+            soft_hi.contains(&0) && !soft_hi.contains(&1),
+            "soft@0.5: {soft_hi:?}"
+        );
+
+        // Ranked by probability, the full container (prob 1) first.
+        let ranked = idx.subsumers_soft(&query, 0.0, params()).unwrap();
+        assert_eq!(ranked[0].0, 0);
     }
 
     #[test]
