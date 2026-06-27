@@ -25,7 +25,7 @@
 //! ```
 
 mod region;
-pub use region::{AxisBox, Ball, Region};
+pub use region::{AxisBox, Ball, Ellipsoid, Region};
 
 mod distance;
 pub use distance::{ball_to_point_l2, box_to_point_l2, query2box_distance};

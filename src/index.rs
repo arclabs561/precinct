@@ -615,6 +615,64 @@ mod tests {
     }
 
     #[test]
+    fn containment_recall_on_realistic_hierarchy() {
+        // Quantify the lift: on a hierarchy of big general concepts (varied,
+        // scattered centers) and small specific ones nested inside them, the
+        // indexed `containing` must recover the enclosing regions -- including
+        // big boxes whose center is far from the query -- at high recall vs the
+        // exhaustive ground truth.
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+        let dim = 16;
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut idx = RegionIndex::new(dim, IndexParams::default()).unwrap();
+        let mut id = 0u32;
+
+        let mut bigs = Vec::new();
+        for _ in 0..10 {
+            let c: Vec<f32> = (0..dim).map(|_| rng.random_range(-5.0..5.0)).collect();
+            let hw: Vec<f32> = (0..dim).map(|_| rng.random_range(3.0..6.0)).collect();
+            idx.add(id, AxisBox::from_center_offset(c.clone(), hw))
+                .unwrap();
+            bigs.push(c);
+            id += 1;
+        }
+        let mut queries = Vec::new();
+        for _ in 0..300 {
+            let bc = &bigs[rng.random_range(0..bigs.len())];
+            let c: Vec<f32> = bc.iter().map(|x| x + rng.random_range(-1.5..1.5)).collect();
+            let hw: Vec<f32> = (0..dim).map(|_| rng.random_range(0.05..0.2)).collect();
+            idx.add(id, AxisBox::from_center_offset(c.clone(), hw))
+                .unwrap();
+            queries.push(c);
+            id += 1;
+        }
+        idx.build().unwrap();
+
+        let (mut hit, mut total) = (0usize, 0usize);
+        for q in &queries {
+            let truth: std::collections::HashSet<u32> =
+                idx.containing_exhaustive(q).into_iter().collect();
+            let got: std::collections::HashSet<u32> = idx
+                .containing(
+                    q,
+                    SearchParams {
+                        ef: 100,
+                        overretrieve: 10,
+                    },
+                )
+                .unwrap()
+                .into_iter()
+                .collect();
+            for t in &truth {
+                hit += usize::from(got.contains(t));
+                total += 1;
+            }
+        }
+        let recall = hit as f64 / total as f64;
+        assert!(recall > 0.95, "containment recall {recall:.3} below 0.95");
+    }
+
+    #[test]
     fn overlapping_and_nearest_region() {
         let mut idx = RegionIndex::new(2, Default::default()).unwrap();
         // A cluster of overlapping boxes near the origin, and far decoys.

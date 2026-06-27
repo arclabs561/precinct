@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.7.0] - 2026-06-27
+
+### Added
+
+- `Ellipsoid` region type (axis-aligned, per-axis semi-axes): the anisotropic
+  member of the region family. Exact `contains`, `log_volume`, and a
+  Newton-iterated exact point-to-surface `distance_to_point`; region-to-region
+  predicates use the bounding box as a documented approximation. Implements
+  `Region`, so it works in `RegionIndex` like `AxisBox` / `Ball`.
+- A containment-recall regression test on a realistic far-centered hierarchy
+  (big general boxes + small nested boxes): the lift recovers enclosing regions
+  at >95% recall vs the exhaustive ground truth.
+
 ## [0.6.0] - 2026-06-27
 
 Completes the region query algebra: beyond containment, the serving interface

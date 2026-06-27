@@ -1,9 +1,10 @@
 # precinct
 
-Approximate nearest-neighbor search over region embeddings (boxes, balls).
+Approximate nearest-neighbor search over region embeddings (boxes, balls, ellipsoids).
 
 Point-ANN indices (HNSW, FAISS) index points; R-trees index regions but collapse
-above ~10 dimensions. Region embeddings -- axis-aligned boxes, balls -- represent
+above ~10 dimensions. Region embeddings -- axis-aligned boxes, balls, ellipsoids,
+or any custom `Region` -- represent
 concepts as volumes, and trained ones live in 64-200 dimensions, so neither tool
 fits. precinct is the high-dimensional index for regions-as-objects: it answers
 three queries over a region corpus.

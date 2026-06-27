@@ -366,6 +366,147 @@ fn lgamma(x: f64) -> f64 {
     0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
+// ─── Ellipsoid ─────────────────────────────────────────────────────────────
+
+/// Axis-aligned ellipsoid: center `c` with per-axis semi-axes `a_i > 0`.
+///
+/// A point `p` is inside iff `sum_i ((p_i - c_i) / a_i)^2 <= 1`. The anisotropic
+/// region type: an ellipsoid is a Gaussian/covariance concept whose extent
+/// differs per dimension (a `Ball` is the special case `a_i = r`).
+///
+/// Point queries (`contains`, `distance_to_point`, `log_volume`) are exact;
+/// the region-to-region predicates use the axis-aligned bounding box `[c - a,
+/// c + a]` as a tractable approximation (exact ellipsoid-ellipsoid containment
+/// and intersection volume have no closed form).
+#[derive(Debug, Clone)]
+pub struct Ellipsoid {
+    center: Vec<f32>,
+    semi_axes: Vec<f32>,
+}
+
+impl Ellipsoid {
+    /// Create an ellipsoid from a center and per-axis semi-axes (all `> 0`).
+    pub fn new(center: Vec<f32>, semi_axes: Vec<f32>) -> Self {
+        assert_eq!(center.len(), semi_axes.len(), "center/semi-axes mismatch");
+        assert!(
+            semi_axes.iter().all(|&a| a > 0.0),
+            "semi-axes must be positive"
+        );
+        Self { center, semi_axes }
+    }
+
+    pub fn semi_axes(&self) -> &[f32] {
+        &self.semi_axes
+    }
+
+    /// The axis-aligned bounding box `[c - a, c + a]` (used by the region-to-region
+    /// approximations).
+    fn bbox(&self) -> AxisBox {
+        let min = self
+            .center
+            .iter()
+            .zip(self.semi_axes.iter())
+            .map(|(c, a)| c - a)
+            .collect();
+        let max = self
+            .center
+            .iter()
+            .zip(self.semi_axes.iter())
+            .map(|(c, a)| c + a)
+            .collect();
+        AxisBox::new(min, max)
+    }
+}
+
+impl Region for Ellipsoid {
+    fn dim(&self) -> usize {
+        self.center.len()
+    }
+
+    fn center(&self) -> &[f32] {
+        &self.center
+    }
+
+    fn distance_to_point(&self, point: &[f32]) -> f32 {
+        debug_assert_eq!(point.len(), self.center.len(), "point dimension mismatch");
+        let d = self.center.len();
+        let q: Vec<f64> = (0..d).map(|i| (point[i] - self.center[i]) as f64).collect();
+        let a: Vec<f64> = self.semi_axes.iter().map(|&x| x as f64).collect();
+        // Inside (or on the surface)?
+        if (0..d).map(|i| (q[i] / a[i]).powi(2)).sum::<f64>() <= 1.0 {
+            return 0.0;
+        }
+        // Nearest surface point solves x_i = a_i^2 q_i / (a_i^2 + lambda) with
+        // lambda > 0 the root of f(lambda) = sum (a_i q_i / (a_i^2 + lambda))^2 - 1.
+        // f is decreasing on lambda > 0 with f(0) > 0, so Newton from 0 converges up.
+        let mut lambda = 0.0f64;
+        for _ in 0..64 {
+            let mut f = -1.0f64;
+            let mut fp = 0.0f64;
+            for i in 0..d {
+                let denom = a[i] * a[i] + lambda;
+                let t = a[i] * q[i] / denom;
+                f += t * t;
+                fp += -2.0 * a[i] * a[i] * q[i] * q[i] / denom.powi(3);
+            }
+            if f.abs() < 1e-9 || fp == 0.0 {
+                break;
+            }
+            lambda -= f / fp;
+            if lambda < 0.0 {
+                lambda = 0.0;
+            }
+        }
+        let dist_sq: f64 = (0..d)
+            .map(|i| {
+                let x = a[i] * a[i] * q[i] / (a[i] * a[i] + lambda);
+                (q[i] - x).powi(2)
+            })
+            .sum();
+        dist_sq.sqrt() as f32
+    }
+
+    fn contains(&self, point: &[f32]) -> bool {
+        debug_assert_eq!(point.len(), self.center.len(), "point dimension mismatch");
+        point
+            .iter()
+            .zip(self.center.iter())
+            .zip(self.semi_axes.iter())
+            .map(|((p, c), a)| ((p - c) / a).powi(2))
+            .sum::<f32>()
+            <= 1.0
+    }
+
+    fn bounding_ball(&self) -> (Vec<f32>, f32) {
+        // The ellipsoid fits in a ball of its largest semi-axis.
+        let radius = self.semi_axes.iter().copied().fold(0.0f32, f32::max);
+        (self.center.clone(), radius)
+    }
+
+    fn contains_region(&self, other: &Self) -> bool {
+        // Bounding-box approximation: self's box contains other's box.
+        self.bbox().contains_region(&other.bbox())
+    }
+
+    fn overlaps_region(&self, other: &Self) -> bool {
+        // Bounding-box approximation: the boxes intersect.
+        self.bbox().overlaps_region(&other.bbox())
+    }
+
+    fn log_volume(&self) -> f32 {
+        // ln vol = ln(unit d-ball vol) + sum ln(a_i).
+        let d = self.semi_axes.len() as f64;
+        let unit = 0.5 * d * std::f64::consts::PI.ln() - lgamma(0.5 * d + 1.0);
+        let sum_ln_a: f64 = self.semi_axes.iter().map(|&a| (a as f64).ln()).sum();
+        (unit + sum_ln_a) as f32
+    }
+
+    fn entailment_prob(&self, other: &Self) -> f32 {
+        // Bounding-box approximation of vol(self ∩ other) / vol(other).
+        self.bbox().entailment_prob(&other.bbox())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +549,45 @@ mod tests {
         assert_eq!(outer.entailment_prob(&disjoint), 0.0); // disjoint
                                                            // Larger ball has larger log-volume.
         assert!(Region::log_volume(&outer) > Region::log_volume(&inner));
+    }
+
+    #[test]
+    fn ellipsoid_contains_distance_volume() {
+        // 2-d ellipsoid, semi-axes (2, 1) at the origin.
+        let e = Ellipsoid::new(vec![0.0, 0.0], vec![2.0, 1.0]);
+        assert!(e.contains(&[0.0, 0.0]));
+        assert!(e.contains(&[1.9, 0.0]));
+        assert!(!e.contains(&[2.1, 0.0]));
+        assert_eq!(e.distance_to_point(&[0.5, 0.5]), 0.0); // inside
+                                                           // Point (3, 0): nearest surface point is (2, 0), distance 1.
+        assert!((e.distance_to_point(&[3.0, 0.0]) - 1.0).abs() < 1e-4);
+        // Point (0, 3): nearest surface point is (0, 1), distance 2.
+        assert!((e.distance_to_point(&[0.0, 3.0]) - 2.0).abs() < 1e-4);
+        // Area = pi * a1 * a2 = 2*pi.
+        assert!((Region::log_volume(&e) - (2.0 * std::f32::consts::PI).ln()).abs() < 1e-4);
+        // A bigger ellipsoid subsumes a smaller concentric one (bbox approx).
+        let big = Ellipsoid::new(vec![0.0, 0.0], vec![4.0, 4.0]);
+        let small = Ellipsoid::new(vec![0.0, 0.0], vec![1.0, 1.0]);
+        assert!(big.contains_region(&small));
+        assert!(!small.contains_region(&big));
+    }
+
+    #[test]
+    fn ellipsoid_in_region_index() {
+        use crate::{IndexParams, RegionIndex, SearchParams};
+        let mut idx: RegionIndex<Ellipsoid> = RegionIndex::new(2, IndexParams::default()).unwrap();
+        for i in 0..20u32 {
+            let o = i as f32 * 3.0;
+            idx.add(i, Ellipsoid::new(vec![o, o], vec![1.5, 0.8]))
+                .unwrap();
+        }
+        idx.build().unwrap();
+        // Nearest ellipsoid to a point inside ellipsoid 4 ([12,12]).
+        let got = idx
+            .search(&[12.0, 12.0], 1, SearchParams::default())
+            .unwrap();
+        assert_eq!(got[0].0, 4);
+        assert_eq!(got[0].1, 0.0);
     }
 
     #[test]
