@@ -1,6 +1,6 @@
 [package]
 name = "precinct"
-version = "0.8.3"
+version = "0.8.4"
 authors = ["Arc <attobop@gmail.com>"]
 edition = "2021"
 rust-version = "1.89"
@@ -20,7 +20,7 @@ thiserror = "2.0"
 # Point ANN backend (optional -- enables RegionIndex)
 vicinity = { version = "0.8", optional = true, default-features = false, features = ["hnsw"] }
 serde = { version = "1", features = ["derive"], optional = true }
-segstore = { version = "0.2", optional = true }
+segstore = { version = "0.3", optional = true }
 durability = { version = "0.6", optional = true }
 
 [dev-dependencies]
