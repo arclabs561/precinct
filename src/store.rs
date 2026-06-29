@@ -46,11 +46,11 @@ impl Store for BoxBacking {
 
     fn merge_segments(
         &self,
-        segs: &[Vec<(u32, AxisBox)>],
+        segs: &[&Vec<(u32, AxisBox)>],
         live: &dyn Fn(&u32) -> bool,
     ) -> Vec<(u32, AxisBox)> {
         segs.iter()
-            .flatten()
+            .flat_map(|s| s.iter())
             .filter(|(id, _)| live(id))
             .cloned()
             .collect()
@@ -119,6 +119,34 @@ impl UpdatableIndex {
         // A sealed add introduces a new segment (a new Arc identity); existing
         // segments keep theirs, so the cache reuses them and builds only the new one.
         self.inner.add(id, region)?;
+        Ok(())
+    }
+
+    /// Add (or re-add) many regions, syncing the write-ahead log once for the whole
+    /// batch instead of once per region. This is the bulk-ingest path (the
+    /// corpus-load phase): per-item WAL sync is the dominant cost on a real disk, so
+    /// one sync per batch is several times faster than a loop of [`Self::add`].
+    /// Every region's dimension is validated before any is ingested.
+    pub fn extend(
+        &mut self,
+        regions: impl IntoIterator<Item = (u32, AxisBox)>,
+    ) -> PersistenceResult<()> {
+        let dim = self.dim;
+        let validated: Result<Vec<(u32, AxisBox)>, PersistenceError> = regions
+            .into_iter()
+            .map(|(id, region)| {
+                if region.dim() != dim {
+                    Err(PersistenceError::InvalidConfig(format!(
+                        "region dimension {} does not match index dimension {}",
+                        region.dim(),
+                        dim
+                    )))
+                } else {
+                    Ok((id, region))
+                }
+            })
+            .collect();
+        self.inner.extend(validated?)?;
         Ok(())
     }
 

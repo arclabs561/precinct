@@ -5,6 +5,21 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [0.8.4] - 2026-06-28
+
+### Added
+
+- `store::UpdatableIndex::extend(regions)`: bulk ingest that syncs the write-ahead
+  log once per batch instead of once per region (every region's dimension is
+  validated before any is ingested). ~2.6x faster than a loop of `add` for a
+  corpus load on a real filesystem (bench `ingest_fs`: 12.3ms vs 4.8ms / 4000
+  regions).
+
+### Changed
+
+- The `store` feature now requires `segstore = "0.3"`; the internal `merge_segments`
+  takes `&[&Segment]` (segstore 0.3's by-reference signature).
+
 ## [0.8.3] - 2026-06-27
 
 ### Changed
