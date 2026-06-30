@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). The 0.x series is
 unstable: minor bumps may break the public API.
 
+## [Unreleased]
+
+### Added
+
+- The `store` feature now persists per-segment `RegionIndex` sidecars and loads
+  them on restart when the build recipe and live id set still match. On
+  `benches/store.rs` (`N=8_000`, `DIM=64`, `FLUSH=1_000`), cold restart search
+  with sidecars measured `[10.150 ms 10.350 ms 10.553 ms]` versus
+  `[1.7605 s 1.7678 s 1.7750 s]` when sidecars were missing and every segment
+  had to rebuild.
+
+### Changed
+
+- The `store` feature now requires `segstore = "0.4"`, `postcard`, and
+  `vicinity >= 0.10.5`.
+
 ## [0.8.4] - 2026-06-28
 
 ### Added

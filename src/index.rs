@@ -10,6 +10,12 @@ pub enum Error {
     NotBuilt,
     #[error("vicinity: {0}")]
     Vicinity(#[from] vicinity::RetrieveError),
+    #[cfg(feature = "store")]
+    #[error("encode: {0}")]
+    Encode(String),
+    #[cfg(feature = "store")]
+    #[error("decode: {0}")]
+    Decode(String),
 }
 
 /// ANN index over region embeddings.
@@ -67,6 +73,16 @@ pub struct RegionIndex<R: Region> {
     /// Maps external doc_id -> index into `regions`.
     id_to_pos: HashMap<u32, usize>,
     built: bool,
+}
+
+#[cfg(feature = "store")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct RegionIndexSnapshot<R> {
+    dim: usize,
+    center: Vec<u8>,
+    lift: Vec<u8>,
+    regions: Vec<R>,
+    ids: Vec<u32>,
 }
 
 /// Parameters for building the region index.
@@ -188,6 +204,57 @@ impl<R: Region> RegionIndex<R> {
         self.lift.build()?;
         self.built = true;
         Ok(())
+    }
+
+    #[cfg(feature = "store")]
+    pub(crate) fn to_postcard(&self) -> Result<Vec<u8>, Error>
+    where
+        R: serde::Serialize + Clone,
+    {
+        let snapshot = RegionIndexSnapshot {
+            dim: self.dim,
+            center: self.center.to_postcard()?,
+            lift: self.lift.to_postcard()?,
+            regions: self.regions.clone(),
+            ids: self.ids.clone(),
+        };
+        postcard::to_allocvec(&snapshot).map_err(|e| Error::Encode(e.to_string()))
+    }
+
+    #[cfg(feature = "store")]
+    pub(crate) fn from_postcard(bytes: &[u8]) -> Result<Self, Error>
+    where
+        R: serde::de::DeserializeOwned,
+    {
+        let snapshot: RegionIndexSnapshot<R> =
+            postcard::from_bytes(bytes).map_err(|e| Error::Decode(e.to_string()))?;
+        if snapshot.regions.len() != snapshot.ids.len() {
+            return Err(Error::Decode(
+                "region and id counts differ in region-index snapshot".into(),
+            ));
+        }
+        let mut id_to_pos = HashMap::with_capacity(snapshot.ids.len());
+        for (pos, id) in snapshot.ids.iter().copied().enumerate() {
+            if id_to_pos.insert(id, pos).is_some() {
+                return Err(Error::Decode(format!(
+                    "duplicate region id {id} in region-index snapshot"
+                )));
+            }
+        }
+        Ok(Self {
+            center: HNSWIndex::from_postcard(&snapshot.center)?,
+            lift: HNSWIndex::from_postcard(&snapshot.lift)?,
+            dim: snapshot.dim,
+            regions: snapshot.regions,
+            ids: snapshot.ids,
+            id_to_pos,
+            built: true,
+        })
+    }
+
+    #[cfg(feature = "store")]
+    pub(crate) fn ids(&self) -> &[u32] {
+        &self.ids
     }
 
     /// The lifted `(d + 2)` query vector `(p, 1, 0)`: the power-distance MIPS
