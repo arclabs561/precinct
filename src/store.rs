@@ -23,7 +23,8 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
@@ -73,6 +74,11 @@ struct Cache {
     by_ptr: HashMap<usize, Option<RegionIndex<AxisBox>>>,
 }
 
+/// The `kind` tag for a persisted per-segment region-index sidecar.
+const INDEX_KIND: &str = "region-hnsw";
+const SIDECAR_MAGIC: &[u8; 8] = b"PRECIDX1";
+const SIDECAR_VERSION: u32 = 1;
+
 /// An updatable, durable multi-segment region-ANN index over axis-aligned boxes.
 pub struct UpdatableIndex {
     inner: SegmentedStore<BoxBacking>,
@@ -80,7 +86,11 @@ pub struct UpdatableIndex {
     m: usize,
     m_max: usize,
     ef_construction: usize,
+    sidecar_recipe: String,
     cache: RefCell<Cache>,
+    /// Segment ids whose on-disk region-index sidecar was validated or written
+    /// in this process, so checkpoint persistence stays O(new segments).
+    persisted: RefCell<HashSet<u64>>,
 }
 
 impl UpdatableIndex {
@@ -99,9 +109,11 @@ impl UpdatableIndex {
             m: params.m,
             m_max: params.m_max,
             ef_construction: params.ef_construction,
+            sidecar_recipe: Self::make_sidecar_recipe(dim, params),
             cache: RefCell::new(Cache {
                 by_ptr: HashMap::new(),
             }),
+            persisted: RefCell::new(HashSet::new()),
         })
     }
 
@@ -156,9 +168,16 @@ impl UpdatableIndex {
         // A tombstone only changes the live-set of the segment that holds `id`, so
         // invalidate just that segment's cached index -- not the whole cache.
         let mut cache = self.cache.borrow_mut();
-        for seg in self.inner.segments() {
+        let ids = self.inner.segment_ids();
+        for (seg_idx, seg) in self.inner.segments().iter().enumerate() {
             if seg.iter().any(|(sid, _)| *sid == id) {
                 cache.by_ptr.remove(&(Arc::as_ptr(seg) as usize));
+                let seg_id = ids[seg_idx];
+                self.persisted.borrow_mut().remove(&seg_id);
+                let _ = self
+                    .inner
+                    .dir()
+                    .delete(&self.inner.index_name(seg_id, INDEX_KIND));
             }
         }
         Ok(())
@@ -172,7 +191,9 @@ impl UpdatableIndex {
 
     /// Persist a checkpoint without merging.
     pub fn checkpoint(&mut self) -> PersistenceResult<()> {
-        self.inner.checkpoint()
+        self.inner.checkpoint()?;
+        self.persist_new_segments();
+        Ok(())
     }
 
     /// Run one round of size-tiered compaction, merging similarly-sized segments
@@ -209,13 +230,16 @@ impl UpdatableIndex {
             let current: std::collections::HashSet<usize> =
                 segs.iter().map(|a| Arc::as_ptr(a) as usize).collect();
             cache.by_ptr.retain(|key, _| current.contains(key));
-            // Build only segments not already cached (i.e. new ones).
-            for seg in segs {
+            // Build only segments not already cached, loading a persisted sidecar
+            // first when one matches the current recipe and live id set.
+            let ids = self.inner.segment_ids();
+            for (i, seg) in segs.iter().enumerate() {
                 let key = Arc::as_ptr(seg) as usize;
+                let seg_id = ids[i];
                 cache
                     .by_ptr
                     .entry(key)
-                    .or_insert_with(|| self.build_live_index(&seg[..]));
+                    .or_insert_with(|| self.build_or_load(&seg[..], seg_id));
             }
             for idx in cache.by_ptr.values().flatten() {
                 cand.extend(idx.search(query, k, sp()).unwrap_or_default());
@@ -254,6 +278,131 @@ impl UpdatableIndex {
         }
         Some(idx)
     }
+
+    /// Load segment `seg_id`'s persisted region index from its sidecar, or build
+    /// it over the segment's live regions and persist it for the next restart.
+    fn build_or_load(&self, seg: &[(u32, AxisBox)], seg_id: u64) -> Option<RegionIndex<AxisBox>> {
+        if let Some(idx) = self.load_sidecar(seg, seg_id) {
+            self.persisted.borrow_mut().insert(seg_id);
+            return Some(idx);
+        }
+        let idx = self.build_live_index(seg)?;
+        self.persist_sidecar(&idx, seg_id);
+        Some(idx)
+    }
+
+    /// Load a sidecar only if its recipe matches and its ids match the segment's
+    /// current live ids. A stale sidecar can never serve a tombstoned region.
+    fn load_sidecar(&self, seg: &[(u32, AxisBox)], seg_id: u64) -> Option<RegionIndex<AxisBox>> {
+        let name = self.inner.index_name(seg_id, INDEX_KIND);
+        if !self.inner.dir().exists(&name) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        self.inner
+            .dir()
+            .open_file(&name)
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let index_bytes = self.decode_sidecar(&bytes)?;
+        let idx = RegionIndex::from_postcard(index_bytes).ok()?;
+        let mut live = HashSet::with_capacity(seg.len());
+        for (id, _) in seg {
+            if self.inner.is_live(id) {
+                live.insert(*id);
+            }
+        }
+        if idx.ids().len() == live.len() && idx.ids().iter().all(|id| live.contains(id)) {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// Persist a built per-segment region index as its sidecar. Best-effort: a
+    /// failed write leaves the in-memory index usable and simply rebuilds later.
+    fn persist_sidecar(&self, idx: &RegionIndex<AxisBox>, seg_id: u64) {
+        if let Ok(index) = idx.to_postcard() {
+            let Some(bytes) = self.encode_sidecar(&index) else {
+                return;
+            };
+            if self
+                .inner
+                .dir()
+                .atomic_write(&self.inner.index_name(seg_id, INDEX_KIND), &bytes)
+                .is_ok()
+            {
+                self.persisted.borrow_mut().insert(seg_id);
+            }
+        }
+    }
+
+    fn make_sidecar_recipe(dim: usize, params: IndexParams) -> String {
+        format!(
+            "precinct-store-region-hnsw-v1;\
+             region=axis-box;dim={};m={};m_max={};ef_construction={};\
+             center=vicinity-hnsw-l2;lift=power-distance-mips-l2;\
+             codec=postcard-region-index-v1",
+            dim, params.m, params.m_max, params.ef_construction
+        )
+    }
+
+    fn encode_sidecar(&self, index: &[u8]) -> Option<Vec<u8>> {
+        let recipe = self.sidecar_recipe.as_bytes();
+        let recipe_len = u32::try_from(recipe.len()).ok()?;
+        let mut bytes = Vec::with_capacity(16 + recipe.len() + index.len());
+        bytes.extend_from_slice(SIDECAR_MAGIC);
+        bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&recipe_len.to_le_bytes());
+        bytes.extend_from_slice(recipe);
+        bytes.extend_from_slice(index);
+        Some(bytes)
+    }
+
+    fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        if bytes.len() < 16 {
+            return None;
+        }
+        if &bytes[..8] != SIDECAR_MAGIC {
+            return None;
+        }
+        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+        if version != SIDECAR_VERSION {
+            return None;
+        }
+        let recipe_len = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
+        let recipe_start = 16usize;
+        let recipe_end = recipe_start.checked_add(recipe_len)?;
+        if bytes.len() < recipe_end {
+            return None;
+        }
+        if &bytes[recipe_start..recipe_end] != self.sidecar_recipe.as_bytes() {
+            return None;
+        }
+        Some(&bytes[recipe_end..])
+    }
+
+    /// Persist sidecars for sealed segments that lack a current one. This is
+    /// incremental: already validated/written segment ids are skipped.
+    fn persist_new_segments(&self) {
+        let ids = self.inner.segment_ids();
+        let id_set: HashSet<u64> = ids.iter().copied().collect();
+        self.persisted.borrow_mut().retain(|id| id_set.contains(id));
+        for (i, seg) in self.inner.segments().iter().enumerate() {
+            let seg_id = ids[i];
+            if self.persisted.borrow().contains(&seg_id) {
+                continue;
+            }
+            if self.load_sidecar(&seg[..], seg_id).is_some() {
+                self.persisted.borrow_mut().insert(seg_id);
+                continue;
+            }
+            if let Some(idx) = self.build_live_index(&seg[..]) {
+                self.persist_sidecar(&idx, seg_id);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +412,28 @@ mod tests {
 
     fn b(lo: f32, hi: f32) -> AxisBox {
         AxisBox::new(vec![lo, lo], vec![hi, hi])
+    }
+
+    fn read_file(dir: &Arc<dyn Directory>, name: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        dir.open_file(name)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn checkpointed_store(dir: Arc<dyn Directory>, params: IndexParams) -> (String, Vec<u8>) {
+        let mut store = UpdatableIndex::open(dir, 4, 2, params).unwrap();
+        for i in 0..12u32 {
+            let lo = i as f32 * 0.25;
+            store.add(i, b(lo, lo + 0.5)).unwrap();
+        }
+        store.checkpoint().unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        let name = store.inner.index_name(seg_id, INDEX_KIND);
+        let bytes = read_file(store.inner.dir(), &name);
+        (name, bytes)
     }
 
     #[test]
@@ -314,5 +485,224 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(top, vec![1], "recovery preserves the search");
+    }
+
+    #[test]
+    fn checkpoint_persists_sidecars_and_reopen_loads_them() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 4, 2, IndexParams::default()).unwrap();
+            for i in 0..12u32 {
+                let lo = i as f32 * 0.25;
+                store.add(i, b(lo, lo + 0.5)).unwrap();
+            }
+            store.checkpoint().unwrap();
+
+            let ids: Vec<u64> = store.inner.segment_ids().to_vec();
+            assert!(
+                !ids.is_empty(),
+                "12 adds at flush 4 seal at least one segment"
+            );
+            for id in &ids {
+                assert!(
+                    store
+                        .inner
+                        .dir()
+                        .exists(&store.inner.index_name(*id, INDEX_KIND)),
+                    "segment {id} must have a persisted sidecar after checkpoint"
+                );
+            }
+        }
+
+        let store = UpdatableIndex::open(dir, 4, 2, IndexParams::default()).unwrap();
+        assert!(
+            !store
+                .search(&[0.3, 0.3], 1, SearchParams::default())
+                .is_empty(),
+            "search over loaded sidecars returns results"
+        );
+    }
+
+    #[test]
+    fn region_sidecar_recipe_mismatch_rebuilds() {
+        let dir = MemoryDirectory::arc();
+        let original = IndexParams::default();
+        let (name, before) = checkpointed_store(dir.clone(), original);
+        assert_eq!(
+            &before[..SIDECAR_MAGIC.len()],
+            SIDECAR_MAGIC,
+            "new sidecars carry the precinct region-index envelope"
+        );
+
+        let changed = IndexParams {
+            m: 8,
+            m_max: 16,
+            ..IndexParams::default()
+        };
+        let store = UpdatableIndex::open(dir.clone(), 4, 2, changed).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "sidecar built with default HNSW params must not load under changed params"
+        );
+        assert!(
+            !store
+                .search(&[0.3, 0.3], 1, SearchParams::default())
+                .is_empty(),
+            "mismatched sidecar falls back to rebuild"
+        );
+
+        let after = read_file(store.inner.dir(), &name);
+        assert_ne!(before, after, "rebuild overwrites the stale-recipe sidecar");
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_some(),
+            "rebuilt sidecar now matches the current recipe"
+        );
+    }
+
+    #[test]
+    fn region_sidecar_envelope_rejects_corrupt_headers() {
+        let store =
+            UpdatableIndex::open(MemoryDirectory::arc(), 4, 2, IndexParams::default()).unwrap();
+        let index = b"index-bytes";
+        let bytes = store.encode_sidecar(index).unwrap();
+        assert_eq!(store.decode_sidecar(&bytes), Some(index.as_slice()));
+
+        assert!(store.decode_sidecar(&bytes[..8]).is_none());
+
+        let mut bad_magic = bytes.clone();
+        bad_magic[0] ^= 0xFF;
+        assert!(store.decode_sidecar(&bad_magic).is_none());
+
+        let mut bad_version = bytes.clone();
+        bad_version[8..12].copy_from_slice(&(SIDECAR_VERSION + 1).to_le_bytes());
+        assert!(store.decode_sidecar(&bad_version).is_none());
+
+        let mut bad_recipe_len = bytes.clone();
+        bad_recipe_len[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(store.decode_sidecar(&bad_recipe_len).is_none());
+
+        let mut bad_recipe = bytes.clone();
+        bad_recipe[16] ^= 0x01;
+        assert!(store.decode_sidecar(&bad_recipe).is_none());
+    }
+
+    #[test]
+    fn region_sidecar_invalid_payload_rebuilds() {
+        let dir = MemoryDirectory::arc();
+        let (name, _) = checkpointed_store(dir.clone(), IndexParams::default());
+        {
+            let store = UpdatableIndex::open(dir.clone(), 4, 2, IndexParams::default()).unwrap();
+            let corrupt = store
+                .encode_sidecar(b"not-a-postcard-region-index")
+                .unwrap();
+            store.inner.dir().atomic_write(&name, &corrupt).unwrap();
+        }
+
+        let store = UpdatableIndex::open(dir.clone(), 4, 2, IndexParams::default()).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "valid envelope with invalid region-index bytes is rejected"
+        );
+        assert!(
+            !store
+                .search(&[0.3, 0.3], 1, SearchParams::default())
+                .is_empty(),
+            "invalid payload falls back to rebuild"
+        );
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_some(),
+            "rebuilt sidecar loads after the fallback"
+        );
+    }
+
+    #[test]
+    fn deleted_id_does_not_resurface_through_a_sidecar() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            store.add(0, b(0.0, 1.0)).unwrap();
+            store.add(1, b(0.2, 1.2)).unwrap();
+            store.add(2, b(5.0, 6.0)).unwrap();
+            store.checkpoint().unwrap();
+            store.delete(0).unwrap();
+            store.checkpoint().unwrap();
+        }
+
+        let store = UpdatableIndex::open(dir, 2, 2, IndexParams::default()).unwrap();
+        let top: Vec<u32> = store
+            .search(&[0.5, 0.5], 3, SearchParams::default())
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !top.contains(&0),
+            "deleted id 0 must not resurface from a persisted sidecar"
+        );
+        assert!(
+            top.contains(&1),
+            "nearest live box should remain searchable"
+        );
+    }
+
+    #[test]
+    fn checkpoint_after_replayed_delete_rewrites_stale_sidecar() {
+        let dir = MemoryDirectory::arc();
+        let (name, stale_bytes) = {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            store.add(0, b(0.0, 1.0)).unwrap();
+            store.add(1, b(0.2, 1.2)).unwrap();
+            store.add(2, b(5.0, 6.0)).unwrap();
+            store.checkpoint().unwrap();
+
+            let seg_id = store.inner.segment_ids()[0];
+            let name = store.inner.index_name(seg_id, INDEX_KIND);
+            let bytes = read_file(store.inner.dir(), &name);
+
+            // Simulate a crash after the delete is durably logged but before
+            // `UpdatableIndex::delete` removes the now-stale sidecar.
+            store.inner.delete(0).unwrap();
+            (name, bytes)
+        };
+
+        let mut store = UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+        let seg_id = store.inner.segment_ids()[0];
+        assert!(
+            store
+                .load_sidecar(&store.inner.segments()[0][..], seg_id)
+                .is_none(),
+            "replayed tombstone must make the old sidecar stale"
+        );
+
+        store.checkpoint().unwrap();
+
+        let rewritten = read_file(&dir, &name);
+        assert_ne!(
+            rewritten, stale_bytes,
+            "checkpoint should rewrite stale sidecars even before search"
+        );
+        let idx = store
+            .load_sidecar(&store.inner.segments()[0][..], seg_id)
+            .expect("rewritten sidecar should be valid");
+        assert!(
+            !idx.ids().contains(&0),
+            "rewritten sidecar must exclude the replayed delete"
+        );
+        assert!(
+            idx.ids().contains(&1),
+            "rewritten sidecar should keep live ids from the segment"
+        );
     }
 }

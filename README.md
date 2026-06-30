@@ -29,7 +29,7 @@ Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
 
 ```toml
 [dependencies]
-precinct = "0.5"
+precinct = "0.8"
 ```
 
 or `cargo add precinct`.
@@ -66,9 +66,10 @@ Increasing it trades query latency for recall.
 `store::UpdatableIndex` wraps the region index in a durable, segmented store
 ([`segstore`](https://crates.io/crates/segstore)): incremental add/delete, a
 write-ahead log, checkpoint, compaction, and crash recovery. Per-segment
-`RegionIndex`es are cached by stable segment identity, so a mutation rebuilds
-only the new or changed segments, not the whole corpus; segments are searched
-and merged, and like the underlying HNSW the merged result is approximate.
+`RegionIndex`es are cached by stable segment identity and persisted as sidecars,
+so a mutation or restart rebuilds only the new or changed segments, not the whole
+corpus; segments are searched and merged, and like the underlying HNSW the
+merged result is approximate.
 Opt-in; the default build does not depend on segstore.
 
 ## Recall
