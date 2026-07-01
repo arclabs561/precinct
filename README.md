@@ -109,6 +109,11 @@ Synthetic box datasets (uniform-random centers, varied widths, `examples/recall_
 
 The point ANN backend is [vicinity](https://github.com/arclabs561/vicinity) (HNSW).
 
+## Examples
+
+See [examples/README.md](examples/README.md) for runnable examples with
+captured output and data requirements.
+
 ## License
 
 MIT OR Apache-2.0
