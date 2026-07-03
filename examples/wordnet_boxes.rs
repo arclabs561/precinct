@@ -22,53 +22,7 @@ const CHECKPOINT: &str = "data/wordnet_boxes.json";
 /// WordNet `child parent` hypernym edges (the subset subsume trains on). Source:
 /// WordNet noun hierarchy; `child ⊑ parent` means parent is the more general
 /// concept, so its box should contain the child's.
-const EDGES: &str = "\
-dog.n.01 canine.n.02
-canine.n.02 carnivore.n.01
-carnivore.n.01 placental.n.01
-placental.n.01 mammal.n.01
-mammal.n.01 vertebrate.n.01
-vertebrate.n.01 chordate.n.01
-chordate.n.01 animal.n.01
-animal.n.01 organism.n.01
-organism.n.01 entity.n.01
-cat.n.01 feline.n.01
-feline.n.01 carnivore.n.01
-wolf.n.01 canine.n.02
-fox.n.01 canine.n.02
-lion.n.01 feline.n.01
-tiger.n.01 feline.n.01
-horse.n.01 equine.n.01
-equine.n.01 placental.n.01
-eagle.n.01 bird_of_prey.n.01
-bird_of_prey.n.01 bird.n.01
-bird.n.01 vertebrate.n.01
-sparrow.n.01 passerine.n.01
-passerine.n.01 bird.n.01
-salmon.n.01 fish.n.01
-fish.n.01 vertebrate.n.01
-trout.n.01 fish.n.01
-oak.n.01 tree.n.01
-tree.n.01 plant.n.02
-plant.n.02 organism.n.01
-pine.n.01 tree.n.01
-rose.n.01 flower.n.01
-flower.n.01 plant.n.02
-tulip.n.01 flower.n.01
-car.n.01 vehicle.n.01
-vehicle.n.01 artifact.n.01
-artifact.n.01 entity.n.01
-truck.n.01 vehicle.n.01
-bicycle.n.01 vehicle.n.01
-whale.n.01 placental.n.01
-dolphin.n.01 placental.n.01
-snake.n.01 reptile.n.01
-reptile.n.01 vertebrate.n.01
-lizard.n.01 reptile.n.01
-penguin.n.01 bird.n.01
-bat.n.01 placental.n.01
-spider.n.01 arthropod.n.01
-arthropod.n.01 animal.n.01";
+const EDGES: &str = include_str!("wordnet_edges.txt");
 
 fn main() {
     let path = std::env::var("WORDNET_BOXES").unwrap_or_else(|_| CHECKPOINT.to_string());
