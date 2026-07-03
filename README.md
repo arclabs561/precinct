@@ -7,7 +7,7 @@ above ~10 dimensions. Region embeddings -- axis-aligned boxes, balls, ellipsoids
 or any custom `Region` -- represent
 concepts as volumes, and trained ones live in 64-200 dimensions, so neither tool
 fits. precinct is the high-dimensional index for regions-as-objects: it answers
-three queries over a region corpus.
+these queries over a region corpus.
 
 - **nearest** -- the `k` regions closest to a point, by true point-to-region
   distance (center index + rerank).
