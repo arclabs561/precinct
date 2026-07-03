@@ -140,6 +140,15 @@ impl<R: Region> RegionIndex<R> {
         };
         // Center index over `dim`; lift index over `dim + 2` (d+1 power-distance
         // MIPS form, +1 for the MIPS->L2 reduction).
+        //
+        // The reduction is load-bearing, not a workaround for a missing metric:
+        // switching the lift index to vicinity's native InnerProduct metric
+        // (dropping the augmentation coordinate) collapsed containment recall
+        // from >0.95 to 0.715 on the realistic-hierarchy test (measured
+        // 2026-07-03). Raw inner product has no triangle inequality and the
+        // large-extent regions become large-norm hub vectors, which degrades
+        // HNSW graph navigability; the reduction places all vectors on a
+        // sphere of radius M, restoring metric structure.
         let center = builder(dim)?;
         let lift = builder(dim + 2)?;
 
