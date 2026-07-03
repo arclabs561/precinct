@@ -231,7 +231,133 @@ impl UpdatableIndex {
     pub fn search(&self, query: &[f32], k: usize, params: SearchParams) -> Vec<(u32, f32)> {
         let SearchParams { ef, overretrieve } = params;
         let sp = || SearchParams { ef, overretrieve };
-        let mut cand: Vec<(u32, f32)> = Vec::new();
+        Self::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| idx.search(query, k, sp()).unwrap_or_default()),
+            k,
+        )
+    }
+
+    /// Regions that contain `point`, unioned over live sealed segments and the
+    /// unflushed buffer. Approximate: recall is bounded by `params`.
+    pub fn containing(&self, point: &[f32], params: SearchParams) -> Vec<u32> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| {
+                idx.containing(point, sp()).unwrap_or_default()
+            }),
+        )
+    }
+
+    /// Regions that fully contain `query`, unioned over live segments.
+    /// Approximate: recall is bounded by `params`.
+    pub fn subsumers(&self, query: &AxisBox, params: SearchParams) -> Vec<u32> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.subsumers(query, sp()).unwrap_or_default()),
+        )
+    }
+
+    /// Regions that softly subsume `query`, returned with probability highest
+    /// first and unioned over live segments. Approximate: recall is bounded by
+    /// `params`.
+    pub fn subsumers_soft(
+        &self,
+        query: &AxisBox,
+        min_prob: f32,
+        params: SearchParams,
+    ) -> Vec<(u32, f32)> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        let mut by_id: HashMap<u32, f32> = HashMap::new();
+        for (id, p) in self.collect_from_segment_indexes(|idx| {
+            idx.subsumers_soft(query, min_prob, sp())
+                .unwrap_or_default()
+        }) {
+            by_id
+                .entry(id)
+                .and_modify(|existing| *existing = existing.max(p))
+                .or_insert(p);
+        }
+        let mut out: Vec<(u32, f32)> = by_id.into_iter().collect();
+        out.sort_unstable_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        out
+    }
+
+    /// Regions fully contained in `query`, unioned over live segments.
+    /// Exhaustive within each segment.
+    pub fn subsumees(&self, query: &AxisBox) -> Vec<u32> {
+        Self::sort_dedup_ids(self.collect_from_segment_indexes(|idx| idx.subsumees(query)))
+    }
+
+    /// Regions that intersect `query`, unioned over live segments. Approximate:
+    /// recall is bounded by `params`.
+    pub fn overlapping(&self, query: &AxisBox, params: SearchParams) -> Vec<u32> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| {
+                idx.overlapping(query, sp()).unwrap_or_default()
+            }),
+        )
+    }
+
+    /// The `k` regions nearest to `query` by center distance.
+    pub fn nearest_region(
+        &self,
+        query: &AxisBox,
+        k: usize,
+        params: SearchParams,
+    ) -> Vec<(u32, f32)> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Self::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| {
+                idx.nearest_region(query, k, sp()).unwrap_or_default()
+            }),
+            k,
+        )
+    }
+
+    /// Exhaustive containment query over live segments.
+    pub fn containing_exhaustive(&self, point: &[f32]) -> Vec<u32> {
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.containing_exhaustive(point)),
+        )
+    }
+
+    /// Exhaustive subsumer query over live segments.
+    pub fn subsumers_exhaustive(&self, query: &AxisBox) -> Vec<u32> {
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.subsumers_exhaustive(query)),
+        )
+    }
+
+    /// Exhaustive overlap query over live segments.
+    pub fn overlapping_exhaustive(&self, query: &AxisBox) -> Vec<u32> {
+        Self::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.overlapping_exhaustive(query)),
+        )
+    }
+
+    /// Exhaustive nearest-region search over live segments.
+    pub fn search_exhaustive(&self, query: &[f32], k: usize) -> Vec<(u32, f32)> {
+        Self::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| idx.search_exhaustive(query, k)),
+            k,
+        )
+    }
+
+    fn collect_from_segment_indexes<T>(
+        &self,
+        mut f: impl FnMut(&RegionIndex<AxisBox>) -> Vec<T>,
+    ) -> Vec<T> {
+        let mut out = Vec::new();
         {
             let segs = self.inner.segments();
             let mut cache = self.cache.borrow_mut();
@@ -245,16 +371,30 @@ impl UpdatableIndex {
                     .entry(seg_id)
                     .or_insert_with(|| self.build_or_load(&seg[..], seg_id));
                 if let Some(idx) = index {
-                    cand.extend(idx.search(query, k, sp()).unwrap_or_default());
+                    out.extend(f(idx));
                 }
             }
         }
         let buffered = self.inner.buffer().to_vec();
         if let Some(idx) = self.build_live_index(&buffered) {
-            cand.extend(idx.search(query, k, sp()).unwrap_or_default());
+            out.extend(f(&idx));
         }
-        // Lower point-to-region distance is nearer.
-        cand.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+        out
+    }
+
+    fn sort_dedup_ids(mut ids: Vec<u32>) -> Vec<u32> {
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    fn truncate_nearest(mut cand: Vec<(u32, f32)>, k: usize) -> Vec<(u32, f32)> {
+        // Lower distance is nearer.
+        cand.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
         cand.truncate(k);
         cand
     }
@@ -497,6 +637,59 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
         assert_eq!(top, vec![1], "recovery preserves the search");
+    }
+
+    #[test]
+    fn store_region_queries_cover_segments_and_buffer() {
+        let dir = MemoryDirectory::arc();
+        let mut store = UpdatableIndex::open(dir, 2, 2, IndexParams::default()).unwrap();
+        store
+            .add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0]))
+            .unwrap();
+        store
+            .add(1, AxisBox::new(vec![1.0, 1.0], vec![2.0, 2.0]))
+            .unwrap();
+        store
+            .add(2, AxisBox::new(vec![8.0, 8.0], vec![12.0, 12.0]))
+            .unwrap();
+        store
+            .add(3, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0]))
+            .unwrap();
+        store
+            .add(4, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0]))
+            .unwrap();
+
+        let params = || SearchParams {
+            ef: 100,
+            overretrieve: 100,
+        };
+        let inner = AxisBox::new(vec![1.25, 1.25], vec![1.75, 1.75]);
+        let overlap = AxisBox::new(vec![9.0, 9.0], vec![11.0, 11.0]);
+
+        assert_eq!(store.containing(&[5.0, 5.0], params()), vec![0, 4]);
+        assert_eq!(store.subsumers(&inner, params()), vec![0, 1]);
+        assert_eq!(store.subsumees(&b(0.0, 10.0)), vec![0, 1, 4]);
+        assert_eq!(store.overlapping(&overlap, params()), vec![0, 2]);
+        assert_eq!(store.containing_exhaustive(&[5.0, 5.0]), vec![0, 4]);
+        assert_eq!(store.subsumers_exhaustive(&inner), vec![0, 1]);
+        assert_eq!(store.overlapping_exhaustive(&overlap), vec![0, 2]);
+
+        let soft = store.subsumers_soft(&overlap, 0.2, params());
+        assert_eq!(
+            soft.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![2, 0]
+        );
+        assert!((soft[0].1 - 1.0).abs() < 1e-5);
+        assert!((soft[1].1 - 0.25).abs() < 1e-5);
+
+        let nearest_region = store.nearest_region(&overlap, 1, params());
+        assert_eq!(nearest_region[0].0, 2);
+
+        let exact = store.search_exhaustive(&[5.0, 5.0], 2);
+        assert_eq!(
+            exact.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![0, 4]
+        );
     }
 
     #[test]
