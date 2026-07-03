@@ -7,6 +7,12 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Added
+
+- `store::UpdatableIndex` now exposes the region query algebra over sealed
+  segments plus the unflushed buffer: containment, strict and soft subsumption,
+  subsumees, overlap, nearest-region, and exhaustive variants.
+
 ### Changed
 
 - `store::UpdatableIndex` now keys its in-memory per-segment `RegionIndex` cache
