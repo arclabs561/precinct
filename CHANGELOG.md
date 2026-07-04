@@ -36,6 +36,9 @@ unstable: minor bumps may break the public API.
 
 ### Fixed
 
+- Store sidecar envelopes now include the `segstore` segment id, so a copied or
+  misnamed `RegionIndex` sidecar is rejected and rebuilt instead of being
+  accepted for a different segment.
 - `store::UpdatableIndex::{compact, compact_tiers, reclaim}` now persist sidecars
   for newly merged segments immediately after segstore checkpoints them, instead
   of waiting for the next search to rebuild and write the sidecar lazily.
