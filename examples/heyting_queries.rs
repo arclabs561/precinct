@@ -242,6 +242,64 @@ fn main() {
     );
     // The Phase 1 gate: index-served candidates must not change the answers.
     assert_eq!(disagreements, 0, "pruned top-{k} diverged from dense");
+
+    conformal_section(&kg, &id_of, &config);
+}
+
+/// Conformal answer sets over the same trained boxes: calibrate "child is_a
+/// -> parent" nonconformities on part of the edge list, then check on the
+/// held-out edges that the guaranteed sets actually contain the true parent.
+fn conformal_section(
+    kg: &BoxKg,
+    id_of: &std::collections::HashMap<String, usize>,
+    config: &QueryConfig,
+) {
+    let pairs: Vec<(Query, usize)> = EDGES
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let (child, parent) = (it.next()?, it.next()?);
+            Some((Query::anchor(id_of[child], HYPERNYM), id_of[parent]))
+        })
+        .collect();
+
+    // Deterministic interleaved split: every 3rd edge held out for testing.
+    let (calibration, test): (Vec<_>, Vec<_>) =
+        pairs.into_iter().enumerate().partition(|(i, _)| i % 3 != 0);
+    let calibration: Vec<(Query, usize)> = calibration.into_iter().map(|(_, p)| p).collect();
+    let test: Vec<(Query, usize)> = test.into_iter().map(|(_, p)| p).collect();
+
+    let alpha = 0.2;
+    let threshold =
+        heyting::calibrate::<Godel>(kg, &calibration, config, alpha).expect("calibrate");
+    let coverage = heyting::empirical_coverage::<Godel>(kg, &test, config, &threshold);
+    let mean_set_size = test
+        .iter()
+        .map(|(q, _)| heyting::answer_set::<Godel>(kg, q, config, &threshold).len())
+        .sum::<usize>() as f32
+        / test.len() as f32;
+
+    println!(
+        "\nconformal answer sets (alpha = {alpha}): calibrated qhat = {:.3} on {} edges;\n\
+         held-out coverage {:.0}% over {} edges (nominal {:.0}%), mean set size {:.1} of {}\n\
+         entities. The guarantee is marginal and assumes exchangeable queries; hypernym\n\
+         edges at different taxonomy depths only approximate that, so read the coverage\n\
+         as an empirical check, not a certificate.",
+        threshold.qhat,
+        threshold.n_calibration,
+        coverage * 100.0,
+        test.len(),
+        (1.0 - alpha) * 100.0,
+        mean_set_size,
+        kg.num_entities(),
+    );
+    // Phase 2 gate: held-out coverage at (or above) the nominal level, with
+    // slack for the small test split's binomial noise.
+    assert!(
+        coverage >= 1.0 - alpha - 0.15,
+        "coverage {coverage} far below nominal {}",
+        1.0 - alpha
+    );
 }
 
 /// Parse a subsume box checkpoint (`{boxes: {idx: {mu, delta}}, dim}`).

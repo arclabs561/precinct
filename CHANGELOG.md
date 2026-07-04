@@ -12,6 +12,8 @@ unstable: minor bumps may break the public API.
 - `store::UpdatableIndex` now exposes the region query algebra over sealed
   segments plus the unflushed buffer: containment, strict and soft subsumption,
   subsumees, overlap, nearest-region, and exhaustive variants.
+- The `heyting_queries` example now uses heyting 0.5 conformal answer sets to
+  calibrate held-out hypernym coverage over trained boxes.
 
 ### Changed
 
