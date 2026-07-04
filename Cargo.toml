@@ -45,6 +45,10 @@ harness = false
 name = "updatable_store"
 required-features = ["store"]
 
+[[example]]
+name = "store_reopen_diagnostics"
+required-features = ["store"]
+
 [features]
 default = ["index"]
 index = ["dep:vicinity"]
