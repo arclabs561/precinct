@@ -23,12 +23,13 @@
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
-use segstore::{SegmentedStore, Store};
+use segstore::{SegmentCatalog, SegmentedStore, Store};
 
 use crate::{AxisBox, IndexParams, Region, RegionIndex, SearchParams};
 
@@ -90,6 +91,26 @@ pub struct UpdatableIndex {
     /// Segment ids whose on-disk region-index sidecar was validated or written
     /// in this process, so checkpoint persistence stays O(new segments).
     persisted: RefCell<HashSet<u64>>,
+}
+
+/// A read-only checkpoint view that loads per-segment region-index sidecars
+/// before falling back to source region segment payloads.
+///
+/// This is the restart/query path for larger stores whose built per-segment
+/// `RegionIndex`es have already been persisted by [`UpdatableIndex::checkpoint`].
+/// It opens the segstore manifest without decoding source segments, then loads
+/// sidecars. A sidecar that contains a tombstoned id is rebuilt from that one
+/// segment before search; the underlying HNSW searches are approximate, so
+/// filtering deleted hits after a truncated graph search is not enough to
+/// preserve recall.
+pub struct SnapshotIndex {
+    catalog: SegmentCatalog<u32>,
+    dim: usize,
+    m: usize,
+    m_max: usize,
+    ef_construction: usize,
+    sidecar_recipe: String,
+    cache: RefCell<HashMap<u64, Option<RegionIndex<AxisBox>>>>,
 }
 
 impl UpdatableIndex {
@@ -415,13 +436,22 @@ impl UpdatableIndex {
             m_max: self.m_max,
             ef_construction: self.ef_construction,
         };
-        let mut idx = match RegionIndex::<AxisBox>::new(self.dim, params) {
+        Self::build_live_index_from(self.dim, params, batch, &|id| self.inner.is_live(id))
+    }
+
+    fn build_live_index_from(
+        dim: usize,
+        params: IndexParams,
+        batch: &[(u32, AxisBox)],
+        live: &dyn Fn(&u32) -> bool,
+    ) -> Option<RegionIndex<AxisBox>> {
+        let mut idx = match RegionIndex::<AxisBox>::new(dim, params) {
             Ok(i) => i,
             Err(_) => return None,
         };
         let mut any = false;
         for (id, region) in batch {
-            if self.inner.is_live(id) && idx.add(*id, region.clone()).is_ok() {
+            if live(id) && idx.add(*id, region.clone()).is_ok() {
                 any = true;
             }
         }
@@ -501,7 +531,11 @@ impl UpdatableIndex {
     }
 
     fn encode_sidecar(&self, index: &[u8]) -> Option<Vec<u8>> {
-        let recipe = self.sidecar_recipe.as_bytes();
+        Self::encode_sidecar_for_recipe(&self.sidecar_recipe, index)
+    }
+
+    fn encode_sidecar_for_recipe(sidecar_recipe: &str, index: &[u8]) -> Option<Vec<u8>> {
+        let recipe = sidecar_recipe.as_bytes();
         let recipe_len = u32::try_from(recipe.len()).ok()?;
         let mut bytes = Vec::with_capacity(16 + recipe.len() + index.len());
         bytes.extend_from_slice(SIDECAR_MAGIC);
@@ -513,6 +547,10 @@ impl UpdatableIndex {
     }
 
     fn decode_sidecar<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        Self::decode_sidecar_for_recipe(&self.sidecar_recipe, bytes)
+    }
+
+    fn decode_sidecar_for_recipe<'a>(sidecar_recipe: &str, bytes: &'a [u8]) -> Option<&'a [u8]> {
         if bytes.len() < 16 {
             return None;
         }
@@ -529,7 +567,7 @@ impl UpdatableIndex {
         if bytes.len() < recipe_end {
             return None;
         }
-        if &bytes[recipe_start..recipe_end] != self.sidecar_recipe.as_bytes() {
+        if &bytes[recipe_start..recipe_end] != sidecar_recipe.as_bytes() {
             return None;
         }
         Some(&bytes[recipe_end..])
@@ -557,10 +595,326 @@ impl UpdatableIndex {
     }
 }
 
+impl SnapshotIndex {
+    /// Open the last checkpoint under `dir` as a read-only region-search
+    /// snapshot.
+    ///
+    /// WAL records after the last checkpoint are intentionally not visible;
+    /// checkpoint before opening a snapshot when newly added regions must be
+    /// searchable through this path.
+    pub fn open(
+        dir: Arc<dyn Directory>,
+        dim: usize,
+        params: IndexParams,
+    ) -> PersistenceResult<Self> {
+        let m = params.m;
+        let m_max = params.m_max;
+        let ef_construction = params.ef_construction;
+        Ok(Self {
+            catalog: SegmentCatalog::open(dir)?,
+            dim,
+            sidecar_recipe: UpdatableIndex::make_sidecar_recipe(dim, params),
+            m,
+            m_max,
+            ef_construction,
+            cache: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Number of checkpointed immutable segments in this snapshot.
+    pub fn segment_count(&self) -> usize {
+        self.catalog.segment_count()
+    }
+
+    /// Number of tombstoned region ids in this snapshot.
+    pub fn tombstone_count(&self) -> usize {
+        self.catalog.tombstone_count()
+    }
+
+    /// The `k` nearest regions to the query point, by point-to-region distance.
+    pub fn search(
+        &self,
+        query: &[f32],
+        k: usize,
+        params: SearchParams,
+    ) -> PersistenceResult<Vec<(u32, f32)>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Ok(UpdatableIndex::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| {
+                idx.search(query, k, sp()).unwrap_or_default()
+            })?,
+            k,
+        ))
+    }
+
+    /// Regions that contain `point`, unioned over live checkpointed segments.
+    pub fn containing(&self, point: &[f32], params: SearchParams) -> PersistenceResult<Vec<u32>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| {
+                idx.containing(point, sp()).unwrap_or_default()
+            })?,
+        ))
+    }
+
+    /// Regions that fully contain `query`, unioned over live checkpointed
+    /// segments.
+    pub fn subsumers(&self, query: &AxisBox, params: SearchParams) -> PersistenceResult<Vec<u32>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| {
+                idx.subsumers(query, sp()).unwrap_or_default()
+            })?,
+        ))
+    }
+
+    /// Regions that softly subsume `query`, returned with probability highest
+    /// first.
+    pub fn subsumers_soft(
+        &self,
+        query: &AxisBox,
+        min_prob: f32,
+        params: SearchParams,
+    ) -> PersistenceResult<Vec<(u32, f32)>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        let mut by_id: HashMap<u32, f32> = HashMap::new();
+        for (id, p) in self.collect_from_segment_indexes(|idx| {
+            idx.subsumers_soft(query, min_prob, sp())
+                .unwrap_or_default()
+        })? {
+            by_id
+                .entry(id)
+                .and_modify(|existing| *existing = existing.max(p))
+                .or_insert(p);
+        }
+        let mut out: Vec<(u32, f32)> = by_id.into_iter().collect();
+        out.sort_unstable_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        Ok(out)
+    }
+
+    /// Regions fully contained in `query`, unioned over live checkpointed
+    /// segments.
+    pub fn subsumees(&self, query: &AxisBox) -> PersistenceResult<Vec<u32>> {
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.subsumees(query))?,
+        ))
+    }
+
+    /// Regions that intersect `query`, unioned over live checkpointed segments.
+    pub fn overlapping(
+        &self,
+        query: &AxisBox,
+        params: SearchParams,
+    ) -> PersistenceResult<Vec<u32>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| {
+                idx.overlapping(query, sp()).unwrap_or_default()
+            })?,
+        ))
+    }
+
+    /// The `k` regions nearest to `query` by center distance.
+    pub fn nearest_region(
+        &self,
+        query: &AxisBox,
+        k: usize,
+        params: SearchParams,
+    ) -> PersistenceResult<Vec<(u32, f32)>> {
+        let SearchParams { ef, overretrieve } = params;
+        let sp = || SearchParams { ef, overretrieve };
+        Ok(UpdatableIndex::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| {
+                idx.nearest_region(query, k, sp()).unwrap_or_default()
+            })?,
+            k,
+        ))
+    }
+
+    /// Exhaustive containment query over live checkpointed segments.
+    pub fn containing_exhaustive(&self, point: &[f32]) -> PersistenceResult<Vec<u32>> {
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.containing_exhaustive(point))?,
+        ))
+    }
+
+    /// Exhaustive subsumer query over live checkpointed segments.
+    pub fn subsumers_exhaustive(&self, query: &AxisBox) -> PersistenceResult<Vec<u32>> {
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.subsumers_exhaustive(query))?,
+        ))
+    }
+
+    /// Exhaustive overlap query over live checkpointed segments.
+    pub fn overlapping_exhaustive(&self, query: &AxisBox) -> PersistenceResult<Vec<u32>> {
+        Ok(UpdatableIndex::sort_dedup_ids(
+            self.collect_from_segment_indexes(|idx| idx.overlapping_exhaustive(query))?,
+        ))
+    }
+
+    /// Exhaustive nearest-region search over live checkpointed segments.
+    pub fn search_exhaustive(&self, query: &[f32], k: usize) -> PersistenceResult<Vec<(u32, f32)>> {
+        Ok(UpdatableIndex::truncate_nearest(
+            self.collect_from_segment_indexes(|idx| idx.search_exhaustive(query, k))?,
+            k,
+        ))
+    }
+
+    fn collect_from_segment_indexes<T>(
+        &self,
+        mut f: impl FnMut(&RegionIndex<AxisBox>) -> Vec<T>,
+    ) -> PersistenceResult<Vec<T>> {
+        let mut out = Vec::new();
+        let mut cache = self.cache.borrow_mut();
+        let current: HashSet<u64> = self.catalog.segment_ids().iter().copied().collect();
+        cache.retain(|seg_id, _| current.contains(seg_id));
+        for &seg_id in self.catalog.segment_ids() {
+            if let Entry::Vacant(entry) = cache.entry(seg_id) {
+                let index = self.build_or_load(seg_id)?;
+                entry.insert(index);
+            }
+            if let Some(Some(idx)) = cache.get(&seg_id) {
+                out.extend(f(idx));
+            }
+        }
+        Ok(out)
+    }
+
+    fn build_or_load(&self, seg_id: u64) -> PersistenceResult<Option<RegionIndex<AxisBox>>> {
+        if let Some(index) = self.load_sidecar(seg_id) {
+            return Ok(Some(index));
+        }
+        let segment: Vec<(u32, AxisBox)> = self.catalog.read_segment(seg_id)?;
+        let params = IndexParams {
+            m: self.m,
+            m_max: self.m_max,
+            ef_construction: self.ef_construction,
+        };
+        let index = UpdatableIndex::build_live_index_from(self.dim, params, &segment, &|id| {
+            self.catalog.is_live(id)
+        });
+        if let Some(index) = &index {
+            self.persist_sidecar(index, seg_id);
+        }
+        Ok(index)
+    }
+
+    fn load_sidecar(&self, seg_id: u64) -> Option<RegionIndex<AxisBox>> {
+        let name = self.catalog.index_name(seg_id, INDEX_KIND);
+        if !self.catalog.dir().exists(&name) {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        self.catalog
+            .dir()
+            .open_file(&name)
+            .ok()?
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let index_bytes = UpdatableIndex::decode_sidecar_for_recipe(&self.sidecar_recipe, &bytes)?;
+        let idx = RegionIndex::from_postcard(index_bytes).ok()?;
+        if idx.ids().iter().all(|id| self.catalog.is_live(id)) {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    fn persist_sidecar(&self, idx: &RegionIndex<AxisBox>, seg_id: u64) {
+        if let Ok(index) = idx.to_postcard() {
+            let Some(bytes) =
+                UpdatableIndex::encode_sidecar_for_recipe(&self.sidecar_recipe, &index)
+            else {
+                return;
+            };
+            let _ = self
+                .catalog
+                .dir()
+                .atomic_write(&self.catalog.index_name(seg_id, INDEX_KIND), &bytes);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use durability::MemoryDirectory;
+    use std::io::{Read, Write};
+    use std::path::PathBuf;
+
+    struct RecordingDirectory {
+        inner: Arc<dyn Directory>,
+        opened: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingDirectory {
+        fn wrap(
+            inner: Arc<dyn Directory>,
+        ) -> (Arc<dyn Directory>, Arc<std::sync::Mutex<Vec<String>>>) {
+            let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Arc::new(Self {
+                    inner,
+                    opened: opened.clone(),
+                }),
+                opened,
+            )
+        }
+    }
+
+    impl Directory for RecordingDirectory {
+        fn create_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.create_file(path)
+        }
+
+        fn open_file(&self, path: &str) -> PersistenceResult<Box<dyn Read + Send>> {
+            if let Ok(mut opened) = self.opened.lock() {
+                opened.push(path.to_string());
+            }
+            self.inner.open_file(path)
+        }
+
+        fn exists(&self, path: &str) -> bool {
+            self.inner.exists(path)
+        }
+
+        fn delete(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.delete(path)
+        }
+
+        fn atomic_rename(&self, from: &str, to: &str) -> PersistenceResult<()> {
+            self.inner.atomic_rename(from, to)
+        }
+
+        fn create_dir_all(&self, path: &str) -> PersistenceResult<()> {
+            self.inner.create_dir_all(path)
+        }
+
+        fn list_dir(&self, path: &str) -> PersistenceResult<Vec<String>> {
+            self.inner.list_dir(path)
+        }
+
+        fn append_file(&self, path: &str) -> PersistenceResult<Box<dyn Write + Send>> {
+            self.inner.append_file(path)
+        }
+
+        fn atomic_write(&self, path: &str, data: &[u8]) -> PersistenceResult<()> {
+            self.inner.atomic_write(path, data)
+        }
+
+        fn file_path(&self, path: &str) -> Option<PathBuf> {
+            self.inner.file_path(path)
+        }
+    }
 
     fn b(lo: f32, hi: f32) -> AxisBox {
         AxisBox::new(vec![lo, lo], vec![hi, hi])
@@ -726,6 +1080,152 @@ mod tests {
                 .search(&[0.3, 0.3], 1, SearchParams::default())
                 .is_empty(),
             "search over loaded sidecars returns results"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_queries_sidecars_without_opening_segment_payloads() {
+        let dir = MemoryDirectory::arc();
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            store
+                .add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0]))
+                .unwrap();
+            store
+                .add(1, AxisBox::new(vec![1.0, 1.0], vec![2.0, 2.0]))
+                .unwrap();
+            store
+                .add(2, AxisBox::new(vec![8.0, 8.0], vec![12.0, 12.0]))
+                .unwrap();
+            store
+                .add(3, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0]))
+                .unwrap();
+            store.checkpoint().unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, 2, IndexParams::default()).unwrap();
+        assert_eq!(snapshot.segment_count(), 2);
+        assert_eq!(snapshot.tombstone_count(), 0);
+
+        let params = || SearchParams {
+            ef: 100,
+            overretrieve: 100,
+        };
+        let inner = AxisBox::new(vec![1.25, 1.25], vec![1.75, 1.75]);
+        let overlap = AxisBox::new(vec![9.0, 9.0], vec![11.0, 11.0]);
+
+        assert_eq!(snapshot.containing(&[5.0, 5.0], params()).unwrap(), vec![0]);
+        assert_eq!(snapshot.subsumers(&inner, params()).unwrap(), vec![0, 1]);
+        assert_eq!(snapshot.subsumees(&b(0.0, 10.0)).unwrap(), vec![0, 1]);
+        assert_eq!(
+            snapshot.overlapping(&overlap, params()).unwrap(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            snapshot.containing_exhaustive(&[5.0, 5.0]).unwrap(),
+            vec![0]
+        );
+        assert_eq!(snapshot.subsumers_exhaustive(&inner).unwrap(), vec![0, 1]);
+        assert_eq!(
+            snapshot.overlapping_exhaustive(&overlap).unwrap(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            snapshot.nearest_region(&overlap, 1, params()).unwrap()[0].0,
+            2
+        );
+        assert_eq!(snapshot.search(&[5.0, 5.0], 1, params()).unwrap()[0].0, 0);
+        assert_eq!(
+            snapshot
+                .search_exhaustive(&[5.0, 5.0], 2)
+                .unwrap()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let soft = snapshot.subsumers_soft(&overlap, 0.2, params()).unwrap();
+        assert_eq!(
+            soft.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![2, 0]
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.idx.")),
+            "snapshot should open persisted sidecars: {opened:?}"
+        );
+        assert!(
+            !opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "valid sidecars should avoid source segment payload reads: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_rebuilds_tombstoned_region_sidecar_before_search() {
+        let dir = MemoryDirectory::arc();
+        let (name, stale_sidecar) = checkpointed_store(dir.clone(), IndexParams::default());
+        {
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 4, 2, IndexParams::default()).unwrap();
+            store.delete(0).unwrap();
+            store.checkpoint().unwrap();
+            store
+                .inner
+                .dir()
+                .atomic_write(&name, &stale_sidecar)
+                .unwrap();
+        }
+
+        let (watched, opened) = RecordingDirectory::wrap(dir);
+        let snapshot = SnapshotIndex::open(watched, 2, IndexParams::default()).unwrap();
+        assert_eq!(snapshot.tombstone_count(), 1);
+        let hits = snapshot
+            .search(&[0.3, 0.3], 3, SearchParams::default())
+            .unwrap();
+        assert!(
+            !hits.iter().any(|(id, _)| *id == 0),
+            "deleted id must not be served by a stale region sidecar"
+        );
+        assert!(!hits.is_empty(), "rebuilt segment should keep live hits");
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.idx.")),
+            "snapshot should inspect the stale sidecar first: {opened:?}"
+        );
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "stale region sidecars should be rebuilt from the source segment: {opened:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_index_rebuilds_missing_sidecar_from_one_segment() {
+        let dir = MemoryDirectory::arc();
+        let (name, _) = checkpointed_store(dir.clone(), IndexParams::default());
+        dir.delete(&name).unwrap();
+
+        let (watched, opened) = RecordingDirectory::wrap(dir.clone());
+        let snapshot = SnapshotIndex::open(watched, 2, IndexParams::default()).unwrap();
+        let hits = snapshot
+            .search(&[0.3, 0.3], 3, SearchParams::default())
+            .unwrap();
+        assert!(
+            !hits.is_empty(),
+            "missing sidecar should rebuild enough index to search"
+        );
+        assert!(
+            dir.exists(&name),
+            "snapshot fallback should persist the rebuilt sidecar"
+        );
+
+        let opened = opened.lock().unwrap().clone();
+        assert!(
+            opened.iter().any(|path| path.starts_with("segstore.seg.")),
+            "missing sidecar should fall back to one source segment read: {opened:?}"
         );
     }
 

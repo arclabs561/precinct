@@ -68,12 +68,12 @@ Increasing it trades query latency for recall.
 write-ahead log, checkpoint, compaction, and crash recovery. Per-segment
 `RegionIndex`es are cached by stable segment identity and persisted as sidecars,
 so a mutation or restart rebuilds only the new or changed segments, not the whole
-corpus; segments are searched and merged, and like the underlying HNSW the
-merged result is approximate.
+corpus. For read-only serving, `store::SnapshotIndex` opens the checkpoint
+manifest and queries sidecars first, decoding a source-region segment only when
+its sidecar is missing or must be rebuilt. Segments are searched and merged, and
+like the underlying HNSW the merged result is approximate.
 The store exposes the same query families as `RegionIndex`: nearest,
 membership, subsumption, overlap, region similarity, and exhaustive scans.
-The source region segments are still loaded by the current `segstore` open path;
-the persisted sidecars avoid rebuilding `RegionIndex`es, not all RAM use.
 Opt-in; the default build does not depend on segstore.
 
 ```bash

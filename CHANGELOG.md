@@ -12,6 +12,9 @@ unstable: minor bumps may break the public API.
 - `examples/updatable_store` demonstrates the optional `store::UpdatableIndex`
   path: checkpoint, delete, reopen, and the region query families over the
   recovered store.
+- Added `store::SnapshotIndex`, a read-only checkpoint view that opens the
+  segstore manifest and queries persisted `RegionIndex` sidecars before falling
+  back to one source-region segment when a sidecar is missing or stale.
 - `store::UpdatableIndex` now exposes the region query algebra over sealed
   segments plus the unflushed buffer: containment, strict and soft subsumption,
   subsumees, overlap, nearest-region, and exhaustive variants.
@@ -25,6 +28,8 @@ unstable: minor bumps may break the public API.
   cache entries when compaction/reclaim changes the segment set.
 - Store writer searches now build the temporary writer-buffer `RegionIndex` from
   the buffer slice instead of cloning buffered regions first.
+- The `store` feature now requires `segstore = "0.4.1"` for manifest-only
+  snapshot reads.
 
 ### Fixed
 
