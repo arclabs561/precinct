@@ -12,6 +12,31 @@ GloVe clustering benchmark.
 | Query trained WordNet concept boxes | `wordnet_boxes` | Data-gated |
 | Measure synthetic center-ANN recall gaps | `recall_gap` | Always runnable, slower |
 | Build concept boxes from GloVe clusters | `glove_concepts` | Data-gated, heavier |
+| Exercise the updatable store | `updatable_store` | Requires `--features store` |
+
+## Store
+
+### `updatable_store`: does delete and reopen preserve query results?
+
+Builds a small segmented store, checkpoints it, deletes a sealed region, then
+reopens from the same directory and runs membership, subsumption, overlap, and
+nearest-region queries.
+
+```bash
+cargo run --features store --example updatable_store
+```
+
+```text
+before delete:
+  containing [5,5]: [0, 4]
+  nearest [0.5,0.5]: [0, 1, 4]
+after reopen:
+  containing [5,5]: [4]
+  subsumers [1.25,1.75]: [1]
+  overlapping [9,11]: [2]
+  nearest region [9,11]: [2]
+  nearest [0.5,0.5]: [1, 4, 2]
+```
 
 ## Real Regions
 
