@@ -179,6 +179,26 @@ fn main() {
                 Query::anchor(id("eagle.n.01"), HYPERNYM),
             ]),
         ),
+        (
+            // A numeric-literal constraint (heyting 0.6 Query::given): the
+            // attribute is taxonomy depth derived from the edge list, and the
+            // constraint "depth <= 3" keeps only general concepts. The
+            // planner also uses the constraint's small support to restrict
+            // the relation hop's scoring.
+            "lit (dog is_a ?) AND depth(?) <= 3".into(),
+            Query::intersection(vec![
+                Query::anchor(id("dog.n.01"), HYPERNYM),
+                Query::given(
+                    depth_from_root(&id_of)
+                        .iter()
+                        .map(|d| match d {
+                            Some(d) if *d <= 3 => 1.0,
+                            _ => 0.0,
+                        })
+                        .collect(),
+                ),
+            ]),
+        ),
     ];
 
     let k = 3;
@@ -300,6 +320,32 @@ fn conformal_section(
         "coverage {coverage} far below nominal {}",
         1.0 - alpha
     );
+}
+
+/// Hop distance from each concept to its taxonomy root (a node with no
+/// outgoing hypernym edge), following the edge list; `None` for concepts
+/// with a parent missing from the subset (does not occur in this data).
+fn depth_from_root(id_of: &std::collections::HashMap<String, usize>) -> Vec<Option<usize>> {
+    let mut parent: Vec<Option<usize>> = vec![None; id_of.len()];
+    for line in EDGES.lines() {
+        let mut it = line.split_whitespace();
+        if let (Some(c), Some(p)) = (it.next(), it.next()) {
+            parent[id_of[c]] = Some(id_of[p]);
+        }
+    }
+    (0..id_of.len())
+        .map(|mut e| {
+            let mut depth = 0usize;
+            while let Some(p) = parent[e] {
+                depth += 1;
+                e = p;
+                if depth > id_of.len() {
+                    return None; // cycle guard; hypernym edges should be acyclic.
+                }
+            }
+            Some(depth)
+        })
+        .collect()
 }
 
 /// Parse a subsume box checkpoint (`{boxes: {idx: {mu, delta}}, dim}`).
