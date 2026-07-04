@@ -42,8 +42,9 @@ after reopen:
 ### `store_reopen_diagnostics`: how much does sidecar-first reopen avoid?
 
 Builds a segmented in-memory region store, checkpoints it, then compares the
-first search after reopening with persisted sidecars against a reopen after
-deleting those sidecars and forcing per-segment `RegionIndex` rebuilds.
+first read-only snapshot search with persisted sidecars against a snapshot
+search after deleting those sidecars and forcing per-segment `RegionIndex`
+rebuilds.
 
 ```bash
 cargo run --release --features store --example store_reopen_diagnostics
@@ -53,8 +54,8 @@ cargo run --release --features store --example store_reopen_diagnostics
 regions: 1000, dim: 16, flush threshold: 200
 sidecars loaded path: 5
 sidecars rebuild path before/after delete: 5/0
-first search with sidecars: 793 us
-first search after deleting sidecars: 106636 us
+first snapshot search with sidecars: 723 us
+first snapshot search after deleting sidecars: 106451 us
 ```
 
 ## Real Regions

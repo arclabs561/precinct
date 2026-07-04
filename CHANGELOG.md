@@ -9,9 +9,9 @@ unstable: minor bumps may break the public API.
 
 ### Added
 
-- Added a `store_reopen_diagnostics` example that prints first-search cost with
-  persisted region-index sidecars present versus after deleting sidecars and
-  forcing per-segment rebuilds.
+- Added a `store_reopen_diagnostics` example that prints first snapshot-search
+  cost with persisted region-index sidecars present versus after deleting
+  sidecars and forcing source-segment rebuilds.
 - `examples/updatable_store` demonstrates the optional `store::UpdatableIndex`
   path: checkpoint, delete, reopen, and the region query families over the
   recovered store.
