@@ -375,8 +375,8 @@ impl UpdatableIndex {
                 }
             }
         }
-        let buffered = self.inner.buffer().to_vec();
-        if let Some(idx) = self.build_live_index(&buffered) {
+        let buffered = self.inner.buffer();
+        if let Some(idx) = self.build_live_index(buffered) {
             out.extend(f(&idx));
         }
         out
