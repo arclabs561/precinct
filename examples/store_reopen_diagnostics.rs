@@ -1,4 +1,4 @@
-//! Measure sidecar-first reopen vs rebuild for the segstore-backed region store.
+//! Measure sidecar-first snapshot reopen vs rebuild for the segstore-backed region store.
 //!
 //! Run:
 //! `cargo run --release --features store --example store_reopen_diagnostics`
@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use durability::{Directory, MemoryDirectory};
-use precinct::{store::UpdatableIndex, AxisBox, IndexParams, SearchParams};
+use precinct::{
+    store::{SnapshotIndex, UpdatableIndex},
+    AxisBox, IndexParams, SearchParams,
+};
 
 const N: usize = 1_000;
 const DIM: usize = 16;
@@ -36,9 +39,12 @@ fn main() -> Result<(), DynError> {
     println!(
         "sidecars rebuild path before/after delete: {sidecars_before_delete}/{sidecars_after_delete}"
     );
-    println!("first search with sidecars: {}", micros(load_elapsed));
     println!(
-        "first search after deleting sidecars: {}",
+        "first snapshot search with sidecars: {}",
+        micros(load_elapsed)
+    );
+    println!(
+        "first snapshot search after deleting sidecars: {}",
         micros(rebuild_elapsed)
     );
     println!("top hit with sidecars: {:?}", load_hits.first());
@@ -59,13 +65,13 @@ fn build_checkpointed_dir() -> Result<(StoreDir, Vec<f32>), DynError> {
 }
 
 fn first_search(dir: StoreDir, query: &[f32]) -> Result<(Duration, SearchHits), DynError> {
-    let index = UpdatableIndex::open(dir, FLUSH, DIM, IndexParams::default())?;
+    let index = SnapshotIndex::open(dir, DIM, IndexParams::default())?;
     let params = SearchParams {
         ef: 100,
         overretrieve: 100,
     };
     let start = Instant::now();
-    let hits = index.search(query, 10, params);
+    let hits = index.search(query, 10, params)?;
     Ok((start.elapsed(), hits))
 }
 

@@ -81,8 +81,9 @@ cargo run --features store --example updatable_store
 ```
 
 For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
-prints the first-search cost with persisted region-index sidecars present
-versus after deleting those sidecars and forcing rebuilds.
+prints the first snapshot-search cost with persisted region-index sidecars
+present versus after deleting those sidecars and forcing source-segment
+rebuilds.
 
 ## Recall
 
