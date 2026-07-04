@@ -13,6 +13,7 @@ GloVe clustering benchmark.
 | Measure synthetic center-ANN recall gaps | `recall_gap` | Always runnable, slower |
 | Build concept boxes from GloVe clusters | `glove_concepts` | Data-gated, heavier |
 | Exercise the updatable store | `updatable_store` | Requires `--features store` |
+| Measure store reopen sidecars | `store_reopen_diagnostics` | Requires `--features store` |
 
 ## Store
 
@@ -36,6 +37,24 @@ after reopen:
   overlapping [9,11]: [2]
   nearest region [9,11]: [2]
   nearest [0.5,0.5]: [1, 4, 2]
+```
+
+### `store_reopen_diagnostics`: how much does sidecar-first reopen avoid?
+
+Builds a segmented in-memory region store, checkpoints it, then compares the
+first search after reopening with persisted sidecars against a reopen after
+deleting those sidecars and forcing per-segment `RegionIndex` rebuilds.
+
+```bash
+cargo run --release --features store --example store_reopen_diagnostics
+```
+
+```text
+regions: 1000, dim: 16, flush threshold: 200
+sidecars loaded path: 5
+sidecars rebuild path before/after delete: 5/0
+first search with sidecars: 793 us
+first search after deleting sidecars: 106636 us
 ```
 
 ## Real Regions
