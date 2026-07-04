@@ -28,7 +28,7 @@ postcard = { version = "1.0", optional = true, features = ["use-crc", "alloc", "
 rand = "0.9"
 # Complex-query engine for the end-to-end example (examples/heyting_queries):
 # precinct serves the candidates, heyting composes the logic.
-heyting = "0.4"
+heyting = "0.5"
 # Concept-region construction from real word vectors (examples/glove_concepts).
 clump = "0.5"
 # GeoJSON parsing for the geographic-region example (examples/geo_regions).
