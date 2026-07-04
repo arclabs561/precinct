@@ -76,6 +76,10 @@ The source region segments are still loaded by the current `segstore` open path;
 the persisted sidecars avoid rebuilding `RegionIndex`es, not all RAM use.
 Opt-in; the default build does not depend on segstore.
 
+```bash
+cargo run --features store --example updatable_store
+```
+
 ## Recall
 
 Recall@k against an exhaustive point-to-region scan (the correctness oracle),

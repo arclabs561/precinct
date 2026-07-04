@@ -9,6 +9,9 @@ unstable: minor bumps may break the public API.
 
 ### Added
 
+- `examples/updatable_store` demonstrates the optional `store::UpdatableIndex`
+  path: checkpoint, delete, reopen, and the region query families over the
+  recovered store.
 - `store::UpdatableIndex` now exposes the region query algebra over sealed
   segments plus the unflushed buffer: containment, strict and soft subsumption,
   subsumees, overlap, nearest-region, and exhaustive variants.
