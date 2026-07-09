@@ -31,8 +31,10 @@ unstable: minor bumps may break the public API.
   cache entries when compaction/reclaim changes the segment set.
 - Store writer searches now build the temporary writer-buffer `RegionIndex` from
   the buffer slice instead of cloning buffered regions first.
-- The `store` feature now requires `segstore = "0.4.1"` for manifest-only
-  snapshot reads.
+- The optional `store` stack now requires `segstore` 0.5, `durability` 0.7.1,
+  and `vicinity` 0.11.0, using `segstore::DefaultStore` for source-region
+  segments and `segstore::SidecarEnvelope` for checked region-index sidecar
+  framing.
 
 ### Fixed
 
