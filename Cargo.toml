@@ -26,6 +26,7 @@ postcard = { version = "1.0", optional = true, features = ["use-crc", "alloc", "
 
 [dev-dependencies]
 rand = "0.9"
+tempfile = "3"
 # Complex-query engine for the end-to-end example (examples/heyting_queries):
 # precinct serves the candidates, heyting composes the logic.
 heyting = "0.6"
