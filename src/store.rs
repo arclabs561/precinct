@@ -29,43 +29,13 @@ use std::io::Read;
 use std::sync::Arc;
 
 use durability::{Directory, PersistenceError, PersistenceResult};
-use segstore::{SegmentCatalog, SegmentedStore, Store};
+use segstore::{DefaultStore, SegmentCatalog, SegmentedStore, SidecarEnvelope};
 
 use crate::{AxisBox, IndexParams, Region, RegionIndex, SearchParams};
 
 /// segstore payload: items are axis-aligned box regions, a segment is a batch of
 /// source boxes (a per-segment `RegionIndex` is built + cached from the live ones).
-struct BoxBacking;
-
-impl Store for BoxBacking {
-    type Id = u32;
-    type Item = AxisBox;
-    type Segment = Vec<(u32, AxisBox)>;
-
-    fn build_segment(&self, batch: &[(u32, AxisBox)]) -> Vec<(u32, AxisBox)> {
-        batch.to_vec()
-    }
-
-    fn merge_segments(
-        &self,
-        segs: &[&Vec<(u32, AxisBox)>],
-        live: &dyn Fn(&u32) -> bool,
-    ) -> Vec<(u32, AxisBox)> {
-        segs.iter()
-            .flat_map(|s| s.iter())
-            .filter(|(id, _)| live(id))
-            .cloned()
-            .collect()
-    }
-
-    fn segment_len(&self, seg: &Vec<(u32, AxisBox)>) -> usize {
-        seg.len()
-    }
-
-    fn live_len(&self, seg: &Vec<(u32, AxisBox)>, live: &dyn Fn(&u32) -> bool) -> Option<usize> {
-        Some(seg.iter().filter(|(id, _)| live(id)).count())
-    }
-}
+type BoxBacking = DefaultStore<u32, AxisBox>;
 
 /// Per-segment region indexes keyed by segstore's stable segment id. A sealed
 /// add creates one new segment id, so cached indexes for existing segments are
@@ -124,7 +94,7 @@ impl UpdatableIndex {
         params: IndexParams,
     ) -> PersistenceResult<Self> {
         Ok(Self {
-            inner: SegmentedStore::open(dir, BoxBacking, flush_threshold)?,
+            inner: SegmentedStore::open(dir, BoxBacking::new(), flush_threshold)?,
             dim,
             m: params.m,
             m_max: params.m_max,
@@ -539,16 +509,14 @@ impl UpdatableIndex {
         seg_id: u64,
         index: &[u8],
     ) -> Option<Vec<u8>> {
-        let recipe = sidecar_recipe.as_bytes();
-        let recipe_len = u32::try_from(recipe.len()).ok()?;
-        let mut bytes = Vec::with_capacity(24 + recipe.len() + index.len());
-        bytes.extend_from_slice(SIDECAR_MAGIC);
-        bytes.extend_from_slice(&SIDECAR_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&seg_id.to_le_bytes());
-        bytes.extend_from_slice(&recipe_len.to_le_bytes());
-        bytes.extend_from_slice(recipe);
-        bytes.extend_from_slice(index);
-        Some(bytes)
+        SidecarEnvelope::encode(
+            SIDECAR_MAGIC,
+            SIDECAR_VERSION,
+            seg_id,
+            sidecar_recipe.as_bytes(),
+            index,
+        )
+        .ok()
     }
 
     fn decode_sidecar<'a>(&self, bytes: &'a [u8], seg_id: u64) -> Option<&'a [u8]> {
@@ -560,30 +528,14 @@ impl UpdatableIndex {
         seg_id: u64,
         bytes: &'a [u8],
     ) -> Option<&'a [u8]> {
-        if bytes.len() < 24 {
-            return None;
-        }
-        if &bytes[..8] != SIDECAR_MAGIC {
-            return None;
-        }
-        let version = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
-        if version != SIDECAR_VERSION {
-            return None;
-        }
-        let encoded_seg_id = u64::from_le_bytes(bytes[12..20].try_into().ok()?);
-        if encoded_seg_id != seg_id {
-            return None;
-        }
-        let recipe_len = u32::from_le_bytes(bytes[20..24].try_into().ok()?) as usize;
-        let recipe_start = 24usize;
-        let recipe_end = recipe_start.checked_add(recipe_len)?;
-        if bytes.len() < recipe_end {
-            return None;
-        }
-        if &bytes[recipe_start..recipe_end] != sidecar_recipe.as_bytes() {
-            return None;
-        }
-        Some(&bytes[recipe_end..])
+        SidecarEnvelope::decode(
+            SIDECAR_MAGIC,
+            SIDECAR_VERSION,
+            seg_id,
+            sidecar_recipe.as_bytes(),
+            bytes,
+        )
+        .ok()
     }
 
     /// Persist sidecars for sealed segments that lack a current one. This is
