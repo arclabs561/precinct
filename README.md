@@ -25,7 +25,7 @@ Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
 
 ```toml
 [dependencies]
-precinct = "0.8"
+precinct = "0.9"
 ```
 
 or `cargo add precinct`.
