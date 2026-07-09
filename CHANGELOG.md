@@ -7,6 +7,8 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-09
+
 ### Added
 
 - Added a `store_reopen_diagnostics` example that prints first snapshot-search
