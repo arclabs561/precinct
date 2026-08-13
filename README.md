@@ -83,45 +83,18 @@ rebuilds.
 
 ## Recall
 
-Recall@k against an exhaustive point-to-region scan (the correctness oracle),
-reported next to the realistic baseline you would use without precinct: plain
-point-ANN over the region *centers*, which ignores extent.
-
-Real data, `examples/glove_concepts` (50K GloVe-6B-50d vectors clustered into
-5,000 concept boxes, the bounding box of each cluster of related words):
-
-| Over-retrieve | precinct (region-aware) | naive point-ANN on centers |
-|---|---|---|
-| 10x | 92.1% | 46.7% |
-| 50x | 99.3% | 46.7% |
-
-The region-distance rerank roughly doubles recall over ranking by center
-distance; over-retrieve does not help the baseline because its ranking is wrong,
-not just truncated.
-
-Real data, `examples/geo_regions` (177 Natural Earth country boxes, `[lon, lat]`
-point queries): recall@3 92.9% over a world grid, and the nearest region by
-surface distance correctly diverges from the nearest by center (a South Pacific
-point resolves to Chile, far from any centroid). Fetch either dataset with the
-matching `scripts/fetch_*.sh`.
-
-Synthetic box datasets (uniform-random centers, varied widths, `examples/recall_gap`):
-
-| Scenario | Recall@10 (10x) | Recall@10 (50x) |
-|---|---|---|
-| Narrow (w=0.01, d=128) | 96.3% | 99.4% |
-| Medium (w=0.1, d=128) | 97.1% | 99.9% |
-| Wide (w=0.5, d=128) | 93.7% | 99.6% |
-| Mixed hierarchy (d=128) | 93.6% | 99.4% |
-| Medium (d=400) | 88.3% | 97.5% |
-| 50K scale (d=128) | 78.7% | 91.8% |
+The examples measure recall@k against an exhaustive point-to-region scan. Run
+`examples/recall_gap` for synthetic box datasets, `examples/glove_concepts` for
+clustered GloVe vectors, or `examples/geo_regions` for geographic bounding
+boxes. See [examples/README.md](examples/README.md) for commands, captured
+output, and data requirements.
 
 The point ANN backend is [vicinity](https://github.com/arclabs561/vicinity) (HNSW).
 
 ## Examples
 
-See [examples/README.md](examples/README.md) for runnable examples with
-captured output and data requirements.
+See [examples/README.md](examples/README.md) for the full set of runnable
+examples.
 
 ## License
 
