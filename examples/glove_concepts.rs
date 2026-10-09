@@ -192,7 +192,7 @@ fn exhaustive_top_k(boxes: &[AxisBox], q: &[f32], k: usize) -> Vec<(u32, f32)> {
         .enumerate()
         .map(|(i, b)| (i as u32, box_to_point_l2(b.min(), b.max(), q)))
         .collect();
-    all.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    all.sort_by(|a, b| a.1.total_cmp(&b.1));
     all.truncate(k);
     all
 }

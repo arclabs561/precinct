@@ -22,7 +22,6 @@
 //! once a second region type needs it.
 
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -272,11 +271,7 @@ impl UpdatableIndex {
                 .or_insert(p);
         }
         let mut out: Vec<(u32, f32)> = by_id.into_iter().collect();
-        out.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        out.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         out
     }
 
@@ -381,11 +376,7 @@ impl UpdatableIndex {
 
     fn truncate_nearest(mut cand: Vec<(u32, f32)>, k: usize) -> Vec<(u32, f32)> {
         // Lower distance is nearer.
-        cand.sort_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        cand.sort_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         cand.truncate(k);
         cand
     }
@@ -657,11 +648,7 @@ impl SnapshotIndex {
                 .or_insert(p);
         }
         let mut out: Vec<(u32, f32)> = by_id.into_iter().collect();
-        out.sort_unstable_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        out.sort_unstable_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         Ok(out)
     }
 

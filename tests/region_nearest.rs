@@ -87,3 +87,17 @@ fn nearest_region_uses_surface_distance_not_center() {
     assert_eq!(exact[0].0, 0);
     assert_eq!(approx[0].0, exact[0].0);
 }
+
+#[test]
+fn exhaustive_search_with_nan_distances_ranks_without_panicking() {
+    // Rust 1.81+ sorts may panic on a comparator that is not a total order;
+    // a NaN region center must not make the exhaustive ranking panic.
+    use precinct::Ball;
+    let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+    for i in 0..30u32 {
+        let x = if i % 3 == 0 { f32::NAN } else { i as f32 };
+        idx.add(i, Ball::new(vec![x, 0.0], 0.5)).unwrap();
+    }
+    let results = idx.search_exhaustive(&[4.0, 0.0], 5);
+    assert_eq!(results.len(), 5);
+}
