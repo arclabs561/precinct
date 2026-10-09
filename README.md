@@ -37,9 +37,9 @@ use precinct::{AxisBox, RegionIndex, SearchParams};
 
 // Build an index of 2-d boxes
 let mut idx = RegionIndex::new(2, Default::default()).unwrap();
-idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])); // general concept
-idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0]));   // specific concept
-idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0]));
+idx.add(0, AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0])).unwrap(); // general concept
+idx.add(1, AxisBox::new(vec![4.0, 4.0], vec![6.0, 6.0])).unwrap();   // specific concept
+idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])).unwrap();
 idx.build().unwrap();
 
 // nearest region to a point inside only the general concept

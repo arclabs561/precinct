@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 //! Approximate nearest-neighbor search over region embeddings (boxes, balls).
 //!
 //! Point-based ANN indices (HNSW, IVF, Vamana) assume queries and database
