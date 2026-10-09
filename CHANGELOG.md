@@ -7,6 +7,16 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- `RegionIndex::build` after further `add` calls rebuilds both HNSW graphs
+  instead of failing on the already-built ones.
+- `query2box_distance` adds the inside term for points outside the box, as in
+  Ren et al. (2020) Eq. 3, so a point just outside no longer outranks interior
+  points.
+- `io::read_boxes` no longer reserves memory for the region count and
+  dimension in the header before the region bytes arrive.
+
 ## [0.9.0] - 2026-07-09
 
 ### Added

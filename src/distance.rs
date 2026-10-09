@@ -45,6 +45,9 @@ pub fn ball_to_point_l2(center: &[f32], radius: f32, point: &[f32]) -> f32 {
 /// d(e, q) = ||dist_outside||_1 + alpha * ||dist_inside||_1
 /// ```
 ///
+/// `dist_inside` is measured from the point clamped into the box to the
+/// center, in every dimension, so a point outside the box pays it too.
+///
 /// `alpha` is typically 0.02 -- inside-box entities are strongly preferred
 /// but still rank-ordered by center proximity.
 #[inline]
@@ -60,13 +63,8 @@ pub fn query2box_distance(min: &[f32], max: &[f32], point: &[f32], alpha: f32) -
         .zip(point.iter())
         .zip(center_iter)
     {
-        let below = lo - p;
-        let above = p - hi;
-        if below > 0.0 || above > 0.0 {
-            dist_outside += below.max(above).max(0.0);
-        } else {
-            dist_inside += (p - c).abs();
-        }
+        dist_outside += (lo - p).max(p - hi).max(0.0);
+        dist_inside += (p.max(*lo).min(*hi) - c).abs();
     }
 
     dist_outside + alpha * dist_inside
@@ -115,7 +113,21 @@ mod tests {
     #[test]
     fn query2box_outside_dominates() {
         let d = query2box_distance(&[0.0, 0.0], &[1.0, 1.0], &[3.0, 3.0], 0.02);
-        // dist_outside = (3-1) + (3-1) = 4.0, dist_inside = 0
-        assert!((d - 4.0).abs() < 1e-6);
+        // Ren et al. Eq. 3: dist_outside = (3-1) + (3-1) = 4.0; dist_inside is
+        // measured from the point clamped into the box, [1, 1], to the center
+        // [0.5, 0.5]: 0.5 + 0.5 = 1.0. Total 4.0 + 0.02 * 1.0.
+        assert!((d - 4.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn query2box_point_just_outside_does_not_beat_an_interior_point() {
+        // Box [0, 10], center 5, alpha 0.02 (Ren et al. Eq. 3). Just outside
+        // at -0.01: 0.01 + 0.02 * |0 - 5| = 0.11. Inside at 0.1:
+        // 0.02 * |0.1 - 5| = 0.098. The interior point must rank first.
+        let outside = query2box_distance(&[0.0], &[10.0], &[-0.01], 0.02);
+        let inside = query2box_distance(&[0.0], &[10.0], &[0.1], 0.02);
+        assert!((outside - 0.11).abs() < 1e-6, "outside = {outside}");
+        assert!((inside - 0.098).abs() < 1e-6, "inside = {inside}");
+        assert!(inside < outside);
     }
 }

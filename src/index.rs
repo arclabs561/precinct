@@ -73,6 +73,8 @@ pub struct RegionIndex<R: Region> {
     /// Maps external doc_id -> index into `regions`.
     id_to_pos: HashMap<u32, usize>,
     built: bool,
+    /// HNSW `(m, m_max, ef_construction)`, kept so `build` can start fresh graphs.
+    hnsw_params: (usize, usize, usize),
 }
 
 #[cfg(feature = "store")]
@@ -127,17 +129,24 @@ impl Default for SearchParams {
 /// Search result: (region_id, distance).
 pub type SearchResult = (u32, f32);
 
+/// An empty L2 HNSW graph over `dim` dimensions with `(m, m_max, ef_construction)`.
+fn new_hnsw(
+    dim: usize,
+    (m, m_max, ef_construction): (usize, usize, usize),
+) -> Result<HNSWIndex, Error> {
+    Ok(HNSWIndex::builder(dim)
+        .m(m)
+        .m_max(m_max)
+        .ef_construction(ef_construction)
+        .metric(vicinity::DistanceMetric::L2)
+        .build()?)
+}
+
 impl<R: Region> RegionIndex<R> {
     /// Create a new region index for the given embedding dimensionality.
     pub fn new(dim: usize, params: IndexParams) -> Result<Self, Error> {
-        let builder = |d: usize| {
-            HNSWIndex::builder(d)
-                .m(params.m)
-                .m_max(params.m_max)
-                .ef_construction(params.ef_construction)
-                .metric(vicinity::DistanceMetric::L2)
-                .build()
-        };
+        let hnsw_params = (params.m, params.m_max, params.ef_construction);
+        let builder = |d: usize| new_hnsw(d, hnsw_params);
         // Center index over `dim`; lift index over `dim + 2` (d+1 power-distance
         // MIPS form, +1 for the MIPS->L2 reduction).
         //
@@ -160,6 +169,7 @@ impl<R: Region> RegionIndex<R> {
             ids: Vec::new(),
             id_to_pos: HashMap::new(),
             built: false,
+            hnsw_params,
         })
     }
 
@@ -182,6 +192,12 @@ impl<R: Region> RegionIndex<R> {
     /// Lifts every region to its `(d + 2)` power-distance vector and inserts it,
     /// then builds the graph.
     pub fn build(&mut self) -> Result<(), Error> {
+        // A built HNSW graph takes no more inserts, and the lift's
+        // normalization constant below depends on every region, so each build
+        // starts from empty graphs.
+        self.center = new_hnsw(self.dim, self.hnsw_params)?;
+        self.lift = new_hnsw(self.dim + 2, self.hnsw_params)?;
+
         // Power-distance lift of each bounding ball: u = (2c, r^2 - ||c||^2).
         let lifted: Vec<Vec<f32>> = self
             .regions
@@ -258,6 +274,12 @@ impl<R: Region> RegionIndex<R> {
             ids: snapshot.ids,
             id_to_pos,
             built: true,
+            // Snapshots do not record the HNSW parameters; a later rebuild of a
+            // loaded index uses the defaults.
+            hnsw_params: {
+                let d = IndexParams::default();
+                (d.m, d.m_max, d.ef_construction)
+            },
         })
     }
 
@@ -304,8 +326,7 @@ impl<R: Region> RegionIndex<R> {
             })
             .collect();
 
-        reranked
-            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         reranked.truncate(k);
         Ok(reranked)
     }
@@ -371,7 +392,7 @@ impl<R: Region> RegionIndex<R> {
                 (p >= min_prob).then_some((id, p))
             })
             .collect();
-        out.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        out.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
         Ok(out)
     }
 
@@ -451,8 +472,7 @@ impl<R: Region> RegionIndex<R> {
                 (id, l2(query.center(), r.center()))
             })
             .collect();
-        reranked
-            .sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        reranked.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         reranked.truncate(k);
         Ok(reranked)
     }
@@ -485,7 +505,7 @@ impl<R: Region> RegionIndex<R> {
             .iter()
             .map(|(&id, &pos)| (id, self.regions[pos].distance_to_point(query)))
             .collect();
-        results.sort_unstable_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         results.truncate(k);
         results
     }
@@ -570,6 +590,30 @@ mod tests {
         }
         idx.build().unwrap();
         idx
+    }
+
+    #[test]
+    fn build_after_more_adds_indexes_every_region() {
+        // Adding after a build and building again must not fail on the
+        // already-built graphs, and both old and new regions must be found.
+        let mut idx = build_test_index();
+        idx.add(
+            100,
+            AxisBox::new(vec![100.0, 100.0, 100.0], vec![101.0, 101.0, 101.0]),
+        )
+        .unwrap();
+        idx.build().unwrap();
+        let near_new = idx
+            .search(&[100.5, 100.5, 100.5], 1, Default::default())
+            .unwrap();
+        assert_eq!(near_new[0].0, 100);
+        let near_old = idx.search(&[0.5, 0.5, 0.5], 1, Default::default()).unwrap();
+        assert_eq!(near_old[0].0, 0);
+        assert_eq!(
+            idx.containing(&[100.5, 100.5, 100.5], Default::default())
+                .unwrap(),
+            vec![100]
+        );
     }
 
     #[test]
