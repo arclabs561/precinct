@@ -53,31 +53,38 @@ pub fn read_boxes<R: Read>(reader: &mut R) -> io::Result<(Vec<u32>, Vec<AxisBox>
     reader.read_exact(&mut buf4)?;
     let dim = u32::from_le_bytes(buf4) as usize;
 
-    let mut ids = Vec::with_capacity(n);
-    let mut boxes = Vec::with_capacity(n);
-
-    let mut float_buf = vec![0u8; dim * 4];
+    // `n` and `dim` come from the stream, so they cannot size allocations up
+    // front: the vectors grow as regions actually arrive.
+    let mut ids = Vec::new();
+    let mut boxes = Vec::new();
 
     for _ in 0..n {
         reader.read_exact(&mut buf4)?;
         ids.push(u32::from_le_bytes(buf4));
 
-        reader.read_exact(&mut float_buf)?;
-        let min: Vec<f32> = float_buf
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-
-        reader.read_exact(&mut float_buf)?;
-        let max: Vec<f32> = float_buf
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
-
+        let min = read_f32s(reader, dim)?;
+        let max = read_f32s(reader, dim)?;
         boxes.push(AxisBox::new(min, max));
     }
 
     Ok((ids, boxes))
+}
+
+/// Read `dim` little-endian `f32`s, buffering only the bytes the stream has.
+fn read_f32s<R: Read>(reader: &mut R, dim: usize) -> io::Result<Vec<f32>> {
+    let len = dim
+        .checked_mul(4)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "dimension overflows"))?;
+    let mut bytes = Vec::new();
+    Read::take(&mut *reader, len as u64).read_to_end(&mut bytes)?;
+    if bytes.len() != len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "region coordinates truncated",
+        ));
+    }
+    let (chunks, _) = bytes.as_chunks::<4>();
+    Ok(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 #[cfg(test)]
@@ -104,6 +111,18 @@ mod tests {
             assert_eq!(orig.min(), read.min());
             assert_eq!(orig.max(), read.max());
         }
+    }
+
+    #[test]
+    fn header_claiming_huge_sizes_errors_without_reserving_them() {
+        // n and dim come from the stream; with no region bytes behind them
+        // the read must fail with EOF, not reserve n regions or dim floats.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // n
+        bytes.extend_from_slice(&u32::MAX.to_le_bytes()); // dim
+        bytes.extend_from_slice(&7u32.to_le_bytes()); // first id, then nothing
+        let err = read_boxes(&mut bytes.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
