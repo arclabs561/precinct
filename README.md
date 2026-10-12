@@ -72,6 +72,13 @@ The store exposes the same query families as `RegionIndex`: nearest,
 membership, subsumption, overlap, region similarity, and exhaustive scans.
 Opt-in; the default build does not depend on segstore.
 
+Nonempty legacy stores without per-copy ownership metadata cannot be opened
+through `SnapshotIndex`. Open through `UpdatableIndex` and checkpoint to upgrade
+stores whose duplicate IDs occur in different segments. Repeated live IDs within
+one segment are rejected during writer recovery without rewriting existing data;
+use a known-good generation or rebuild from validated latest-per-ID records in
+that case. Empty legacy stores remain readable.
+
 ```bash
 cargo run --features store --example updatable_store
 ```
