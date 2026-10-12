@@ -7,7 +7,16 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Changed
+
+- The optional `store` feature now requires `segstore` 0.7 and `durability`
+  0.9. Callers must use `durability` 0.9 directories with the store APIs.
+  Filesystem stores now refuse a second concurrent writer.
+
 ### Fixed
+
+- Re-adding a region id replaces its old sealed copy in cached queries,
+  persisted sidecars, and recovered writer and snapshot indexes.
 
 - `RegionIndex::build` after further `add` calls rebuilds both HNSW graphs
   instead of failing on the already-built ones.

@@ -118,7 +118,9 @@ impl UpdatableIndex {
             )));
         }
         // A sealed add introduces a new segment id; existing segment ids stay
-        // stable, so the cache reuses them and builds only the new one.
+        // stable, so the cache reuses them and builds only the new one. A re-add
+        // changes the old segment's live set before the replacement is sealed.
+        self.invalidate_live_segment_of(id);
         self.inner.add(id, region)?;
         Ok(())
     }
@@ -147,29 +149,32 @@ impl UpdatableIndex {
                 }
             })
             .collect();
-        self.inner.extend(validated?)?;
+        let validated = validated?;
+        for (id, _) in &validated {
+            self.invalidate_live_segment_of(*id);
+        }
+        self.inner.extend(validated)?;
         Ok(())
     }
 
     /// Tombstone a region.
     pub fn delete(&mut self, id: u32) -> PersistenceResult<()> {
+        self.invalidate_live_segment_of(id);
         self.inner.delete(id)?;
-        // A tombstone only changes the live-set of the segment that holds `id`, so
-        // invalidate just that segment's cached index -- not the whole cache.
-        let mut cache = self.cache.borrow_mut();
-        let ids = self.inner.segment_ids();
-        for (seg_idx, seg) in self.inner.segments().iter().enumerate() {
-            if seg.iter().any(|(sid, _)| *sid == id) {
-                let seg_id = ids[seg_idx];
-                cache.by_segment_id.remove(&seg_id);
-                self.persisted.borrow_mut().remove(&seg_id);
-                let _ = self
-                    .inner
-                    .dir()
-                    .delete(&self.inner.index_name(seg_id, INDEX_KIND));
-            }
-        }
         Ok(())
+    }
+
+    /// Invalidate the segment whose live copy is superseded or deleted.
+    fn invalidate_live_segment_of(&self, id: u32) {
+        let Some(seg_id) = self.inner.live_segment_of(&id) else {
+            return;
+        };
+        self.cache.borrow_mut().by_segment_id.remove(&seg_id);
+        self.persisted.borrow_mut().remove(&seg_id);
+        let _ = self
+            .inner
+            .dir()
+            .delete(&self.inner.index_name(seg_id, INDEX_KIND));
     }
 
     /// Merge segments (dropping tombstoned regions) and persist a checkpoint.
@@ -400,6 +405,21 @@ impl UpdatableIndex {
         Self::build_live_index_from(self.dim, params, batch, &|id| self.inner.is_live(id))
     }
 
+    fn build_live_segment_index(
+        &self,
+        batch: &[(u32, AxisBox)],
+        seg_id: u64,
+    ) -> Option<RegionIndex<AxisBox>> {
+        let params = IndexParams {
+            m: self.m,
+            m_max: self.m_max,
+            ef_construction: self.ef_construction,
+        };
+        Self::build_live_index_from(self.dim, params, batch, &|id| {
+            self.inner.is_live_in(seg_id, id)
+        })
+    }
+
     fn build_live_index_from(
         dim: usize,
         params: IndexParams,
@@ -429,7 +449,7 @@ impl UpdatableIndex {
             self.persisted.borrow_mut().insert(seg_id);
             return Some(idx);
         }
-        let idx = self.build_live_index(seg)?;
+        let idx = self.build_live_segment_index(seg, seg_id)?;
         self.persist_sidecar(&idx, seg_id);
         Some(idx)
     }
@@ -452,7 +472,7 @@ impl UpdatableIndex {
         let idx = RegionIndex::from_postcard(index_bytes).ok()?;
         let mut live = HashSet::with_capacity(seg.len());
         for (id, _) in seg {
-            if self.inner.is_live(id) {
+            if self.inner.is_live_in(seg_id, id) {
                 live.insert(*id);
             }
         }
@@ -544,7 +564,7 @@ impl UpdatableIndex {
                 self.persisted.borrow_mut().insert(seg_id);
                 continue;
             }
-            if let Some(idx) = self.build_live_index(&seg[..]) {
+            if let Some(idx) = self.build_live_segment_index(&seg[..], seg_id) {
                 self.persist_sidecar(&idx, seg_id);
             }
         }
@@ -752,7 +772,7 @@ impl SnapshotIndex {
             ef_construction: self.ef_construction,
         };
         let index = UpdatableIndex::build_live_index_from(self.dim, params, &segment, &|id| {
-            self.catalog.is_live(id)
+            self.catalog.is_live_in(seg_id, id)
         });
         if let Some(index) = &index {
             self.persist_sidecar(index, seg_id);
@@ -775,7 +795,11 @@ impl SnapshotIndex {
         let index_bytes =
             UpdatableIndex::decode_sidecar_for_recipe(&self.sidecar_recipe, seg_id, &bytes)?;
         let idx = RegionIndex::from_postcard(index_bytes).ok()?;
-        if idx.ids().iter().all(|id| self.catalog.is_live(id)) {
+        if idx
+            .ids()
+            .iter()
+            .all(|id| self.catalog.is_live_in(seg_id, id))
+        {
             Some(idx)
         } else {
             None
@@ -1458,5 +1482,60 @@ mod tests {
             idx.ids().contains(&1),
             "rewritten sidecar should keep live ids from the segment"
         );
+    }
+    #[test]
+    fn re_add_replaces_region_through_cache_recovery_and_snapshot() {
+        for bulk in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let dir = durability::FsDirectory::arc(root.path()).unwrap();
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            store
+                .extend([(7, b(0.0, 1.0)), (8, b(20.0, 21.0))])
+                .unwrap();
+            store.checkpoint().unwrap();
+            assert_eq!(store.containing_exhaustive(&[0.5, 0.5]), vec![7]);
+            if bulk {
+                store.extend([(7, b(10.0, 11.0))]).unwrap();
+            } else {
+                store.add(7, b(10.0, 11.0)).unwrap();
+            }
+            assert!(store.containing_exhaustive(&[0.5, 0.5]).is_empty());
+            assert_eq!(store.containing_exhaustive(&[10.5, 10.5]), vec![7]);
+            drop(store);
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            assert!(store.containing_exhaustive(&[0.5, 0.5]).is_empty());
+            assert_eq!(store.containing_exhaustive(&[10.5, 10.5]), vec![7]);
+            store.checkpoint().unwrap();
+            drop(store);
+            let snapshot = SnapshotIndex::open(dir.clone(), 2, IndexParams::default()).unwrap();
+            assert!(snapshot
+                .containing_exhaustive(&[0.5, 0.5])
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                snapshot.containing_exhaustive(&[10.5, 10.5]).unwrap(),
+                vec![7]
+            );
+            drop(snapshot);
+            let mut store =
+                UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+            store.compact().unwrap();
+            assert!(store.containing_exhaustive(&[0.5, 0.5]).is_empty());
+            assert_eq!(store.containing_exhaustive(&[10.5, 10.5]), vec![7]);
+        }
+    }
+
+    #[test]
+    fn filesystem_store_refuses_second_writer_and_reopens_after_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = durability::FsDirectory::arc(root.path()).unwrap();
+        let mut first = UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).unwrap();
+        first.add(7, b(10.0, 11.0)).unwrap();
+        assert!(UpdatableIndex::open(dir.clone(), 2, 2, IndexParams::default()).is_err());
+        drop(first);
+        let reopened = UpdatableIndex::open(dir, 2, 2, IndexParams::default()).unwrap();
+        assert_eq!(reopened.containing_exhaustive(&[10.5, 10.5]), vec![7]);
     }
 }
