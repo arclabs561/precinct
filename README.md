@@ -84,9 +84,10 @@ cargo run --features store --example updatable_store
 ```
 
 For measurement, `cargo run --release --features store --example store_reopen_diagnostics`
-prints the first snapshot-search cost with persisted region-index sidecars
-present versus after deleting those sidecars and forcing source-segment
-rebuilds.
+reopens a checkpointed store and prints the duration of its first snapshot
+search. It does this twice: once with the persisted sidecars for the region
+indexes present, and once after deleting those sidecars, which forces each
+segment to be rebuilt from its source regions.
 
 ## Recall
 
