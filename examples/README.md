@@ -143,5 +143,5 @@ scripts/fetch_glove.sh
 cargo run --release --example glove_concepts
 ```
 
-This is the heaviest example in the crate. The top-level README's recall table
-records the current captured result for this benchmark.
+This is the heaviest example in the crate. It prints recall and timing results
+for the generated concept boxes; timings vary by machine.
