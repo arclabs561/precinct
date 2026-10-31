@@ -16,6 +16,11 @@ unstable: minor bumps may break the public API.
 - `AxisBox::entailment_prob` returns 1 when `self` contains a zero-width box
   (for example a point entity). It returned 0 because the zero-width
   intersection was treated as disjoint.
+- `Ball::entailment_prob` resolves the zero-volume `0/0` case by containment on
+  both sides. A zero-radius `self` previously reported partial entailment from
+  the interpolation (0.25 for `r_self = 0`, `r_other = 1`, centers 0.5 apart)
+  even though a point contains no volume; it now returns 1 only for an equal
+  point and 0 otherwise. A contained zero-radius `other` still returns 1.
 
 ## [0.10.1] - 2026-10-31
 
