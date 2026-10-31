@@ -7,6 +7,13 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- `RegionIndex::search_with_distance` passes the closure each region's
+  insertion position, as documented. It passed vicinity's internal HNSW ids,
+  which `build` reorders, so a closure indexing regions by insertion order
+  scored the wrong region. Requires vicinity 0.11.2 for `HNSWIndex::doc_id`.
+
 ## [0.10.0] - 2026-10-12
 
 ### Changed

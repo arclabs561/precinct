@@ -18,7 +18,7 @@ exclude = ["benches/", "data/", ".github/"]
 thiserror = "2.0"
 
 # Point ANN backend (optional -- enables RegionIndex)
-vicinity = { version = "0.11.0", optional = true, default-features = false, features = ["hnsw"] }
+vicinity = { version = "0.11.2", optional = true, default-features = false, features = ["hnsw"] }
 serde = { version = "1", features = ["derive"], optional = true }
 segstore = { version = "0.7.1", optional = true }
 durability = { version = "0.9", optional = true }
@@ -35,7 +35,7 @@ clump = "0.5"
 # GeoJSON parsing for the geographic-region example (examples/geo_regions).
 serde_json = "1"
 # Point-ANN baseline (centers only) for the recall-gap comparison in examples.
-vicinity = { version = "0.11.0", default-features = false, features = ["hnsw"] }
+vicinity = { version = "0.11.2", default-features = false, features = ["hnsw"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]

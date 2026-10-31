@@ -525,9 +525,18 @@ impl<R: Region> RegionIndex<R> {
         if !self.built {
             return Err(Error::NotBuilt);
         }
+        // The HNSW closure receives internal node ids, which `build` reorders;
+        // map each back to its insertion position before calling `dist_fn`.
+        let to_pos = |internal: u32| {
+            self.center
+                .doc_id(internal)
+                .and_then(|doc| self.id_to_pos.get(&doc).copied())
+        };
         Ok(self
             .center
-            .search_with_distance(query, k, ef, &|q, id| dist_fn(q, id))?)
+            .search_with_distance(query, k, ef, &|q, internal| {
+                to_pos(internal).map_or(f32::INFINITY, |pos| dist_fn(q, pos as u32))
+            })?)
     }
 
     /// Get a region by its external ID.
