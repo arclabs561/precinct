@@ -7,6 +7,8 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-31
+
 ### Fixed
 
 - `RegionIndex::search_with_distance` passes the closure each region's
