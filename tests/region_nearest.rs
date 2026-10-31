@@ -101,3 +101,28 @@ fn exhaustive_search_with_nan_distances_ranks_without_panicking() {
     let results = idx.search_exhaustive(&[4.0, 0.0], 5);
     assert_eq!(results.len(), 5);
 }
+
+#[test]
+fn nearest_region_finds_enclosing_region_with_far_center() {
+    // Region 0 encloses the query (distance 0) but its center is ~69 away;
+    // 40 small boxes ring the query at radius 3 with nearer centers. Center
+    // candidates alone (k * overretrieve = 10) never reach region 0.
+    let mut idx = RegionIndex::new(2, Default::default()).unwrap();
+    idx.add(0, AxisBox::new(vec![-1.0, -1.0], vec![99.0, 99.0]))
+        .unwrap();
+    for i in 1..=40u32 {
+        let t = i as f32 * 0.157;
+        let (x, y) = (3.0 * t.cos(), 3.0 * t.sin());
+        idx.add(
+            i,
+            AxisBox::new(vec![x - 0.1, y - 0.1], vec![x + 0.1, y + 0.1]),
+        )
+        .unwrap();
+    }
+    idx.build().unwrap();
+
+    let q = [0.0f32, 0.0];
+    assert_eq!(idx.search_exhaustive(&q, 1)[0], (0, 0.0));
+    let got = idx.search(&q, 1, SearchParams::default()).unwrap();
+    assert_eq!(got[0], (0, 0.0), "enclosing region missed; got {got:?}");
+}

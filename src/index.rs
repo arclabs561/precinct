@@ -300,8 +300,9 @@ impl<R: Region> RegionIndex<R> {
 
     /// Search for the `k` nearest regions to `query` by point-to-region distance.
     ///
-    /// Retrieves `k * overretrieve` candidates from the lifted power-distance
-    /// index, then reranks each by the true [`Region::distance_to_point`].
+    /// Retrieves `k * overretrieve` candidates each from the center index and
+    /// the lifted power-distance index, then reranks the union by the true
+    /// [`Region::distance_to_point`].
     #[must_use = "search results are not used"]
     pub fn search(
         &self,
@@ -314,13 +315,26 @@ impl<R: Region> RegionIndex<R> {
         }
 
         let fetch_k = k.saturating_mul(params.overretrieve).max(k);
-        // Nearest-region uses the center index: center proximity is the right
-        // candidate signal, and the rerank fixes the surface-vs-center gap.
-        let candidates = self.center.search(query, fetch_k, params.ef)?;
+        // Center proximity finds small nearby regions; the lift finds large
+        // regions near or enclosing the query whose centers are far away. The
+        // rerank fixes the surface-vs-center gap for both.
+        let mut candidates: std::collections::HashSet<u32> = self
+            .center
+            .search(query, fetch_k, params.ef)?
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let lifted = self.lift_query(query);
+        candidates.extend(
+            self.lift
+                .search(&lifted, fetch_k, params.ef)?
+                .into_iter()
+                .map(|(id, _)| id),
+        );
 
         let mut reranked: Vec<SearchResult> = candidates
             .into_iter()
-            .map(|(doc_id, _)| {
+            .map(|doc_id| {
                 let region = &self.regions[self.id_to_pos[&doc_id]];
                 (doc_id, region.distance_to_point(query))
             })
