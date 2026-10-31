@@ -19,7 +19,10 @@ dimensions. It answers these query families over a region corpus:
 
 Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
 `Region::entailment_prob` (the soft subsumption probability
-`vol(self ∩ other) / vol(other)`, the box-lattice conditional).
+`vol(self ∩ other) / vol(other)`, the box-lattice conditional). When the child
+is zero-width (a point entity) or a zero-radius ball, containment decides: the
+probability is 1 when its position lies inside and 0 otherwise, rather than
+interpolated from a `0/0` ratio.
 
 ## Install
 

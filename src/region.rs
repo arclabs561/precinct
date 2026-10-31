@@ -57,6 +57,10 @@ pub trait Region {
     /// for partial overlap. This is the box-lattice conditional probability
     /// (Vilnis et al. 2018); exact for boxes, an approximation for balls (the
     /// exact lens volume needs the regularized incomplete beta function).
+    ///
+    /// A zero-volume (zero-width, zero-radius) argument makes the ratio `0/0`.
+    /// Implementations resolve that limit by containment: `1.0` iff `self`
+    /// contains `other`, otherwise `0.0`.
     fn entailment_prob(&self, other: &Self) -> f32
     where
         Self: Sized;
@@ -329,10 +333,21 @@ impl Region for Ball {
     fn entailment_prob(&self, other: &Self) -> f32 {
         // Approximate (exact lens volume needs the regularized incomplete beta):
         // 1 if self contains other, 0 if disjoint, else a monotone interpolation.
-        let cd = center_dist(&self.center, &other.center);
-        if other.radius == 0.0 {
-            return if cd <= self.radius { 1.0 } else { 0.0 };
+        //
+        // A zero-radius ball has zero volume, so the ratio is 0/0 whenever
+        // either side is degenerate. Resolve it by the containment limit (the
+        // closed ball's `contains_region`) instead: the interpolation below
+        // would otherwise divide by zero, or report a nonzero probability
+        // (0.25 for r_self = 0, r_other = 1, centers 0.5 apart) for a
+        // zero-volume `self` that contains no volume of `other` at all.
+        if self.radius == 0.0 || other.radius == 0.0 {
+            return if self.contains_region(other) {
+                1.0
+            } else {
+                0.0
+            };
         }
+        let cd = center_dist(&self.center, &other.center);
         if cd + other.radius <= self.radius {
             1.0
         } else if cd >= self.radius + other.radius {
