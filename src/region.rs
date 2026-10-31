@@ -225,10 +225,13 @@ impl Region for AxisBox {
     }
 
     fn entailment_prob(&self, other: &Self) -> f32 {
-        // vol(self ∩ other) / vol(other), in log space then exponentiated.
-        // The intersection box is [max(lo), min(hi)] per dimension; if empty in
-        // any dimension the regions are disjoint and the probability is 0.
-        let mut inter_log_vol = 0.0f32;
+        // vol(self ∩ other) / vol(other) factors per dimension into
+        // |self_i ∩ other_i| / |other_i|, summed in log space then exponentiated.
+        // The intersection is [max(lo), min(hi)]; if empty in any dimension the
+        // regions are disjoint and the probability is 0. A zero-width side of
+        // `other` contributes 1 when it lies inside self's interval (the limit
+        // of the ratio, as for a zero-radius `Ball`), else 0.
+        let mut log_ratio = 0.0f32;
         for (((s_lo, s_hi), o_lo), o_hi) in self
             .min
             .iter()
@@ -236,14 +239,20 @@ impl Region for AxisBox {
             .zip(other.min.iter())
             .zip(other.max.iter())
         {
+            if o_hi <= o_lo {
+                if s_lo <= o_lo && o_lo <= s_hi {
+                    continue;
+                }
+                return 0.0;
+            }
             let lo = s_lo.max(*o_lo);
             let hi = s_hi.min(*o_hi);
             if hi <= lo {
                 return 0.0; // disjoint in this dimension
             }
-            inter_log_vol += (hi - lo).ln();
+            log_ratio += (hi - lo).ln() - (o_hi - o_lo).ln();
         }
-        (inter_log_vol - Region::log_volume(other)).exp().min(1.0)
+        log_ratio.exp().min(1.0)
     }
 }
 
@@ -536,6 +545,24 @@ mod tests {
         // disjoint -> 0.
         let far = AxisBox::new(vec![10.0, 10.0], vec![11.0, 11.0]);
         assert_eq!(outer.entailment_prob(&far), 0.0);
+    }
+
+    #[test]
+    fn box_entailment_of_contained_zero_width_box_is_one() {
+        // A point entity (Query2Box) or a flat box inside `outer` is fully
+        // contained, so P(outer ⊒ flat) = 1 even though vol(flat) = 0.
+        let outer = AxisBox::new(vec![0.0, 0.0], vec![10.0, 10.0]);
+        let flat = AxisBox::new(vec![5.0, 4.0], vec![5.0, 6.0]);
+        assert!(outer.contains_region(&flat));
+        assert_eq!(outer.entailment_prob(&flat), 1.0);
+        let point = AxisBox::new(vec![5.0, 5.0], vec![5.0, 5.0]);
+        assert_eq!(outer.entailment_prob(&point), 1.0);
+        // Half of the flat box's extent along dim 1 lies inside `half`.
+        let half = AxisBox::new(vec![0.0, 0.0], vec![10.0, 5.0]);
+        assert!((half.entailment_prob(&flat) - 0.5).abs() < 1e-6);
+        // Outside along the zero-width dimension -> 0.
+        let left = AxisBox::new(vec![0.0, 0.0], vec![4.0, 10.0]);
+        assert_eq!(left.entailment_prob(&flat), 0.0);
     }
 
     #[test]

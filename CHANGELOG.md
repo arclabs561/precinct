@@ -7,6 +7,16 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+### Fixed
+
+- `RegionIndex::search` also draws candidates from the lifted power-distance
+  index, as documented. It used only the center index, so a large region
+  enclosing the query (distance 0) lost to nearer-centered small regions once
+  they filled the `k * overretrieve` candidate set.
+- `AxisBox::entailment_prob` returns 1 when `self` contains a zero-width box
+  (for example a point entity). It returned 0 because the zero-width
+  intersection was treated as disjoint.
+
 ## [0.10.1] - 2026-10-31
 
 ### Fixed
