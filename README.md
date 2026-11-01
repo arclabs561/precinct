@@ -5,17 +5,17 @@ Approximate nearest-neighbor search over region embeddings.
 `precinct` indexes boxes, balls, ellipsoids, or any custom `Region` in high
 dimensions. It answers these query families over a region corpus:
 
-- **nearest** -- the `k` regions closest to a point, by true point-to-region
+- **nearest**: the `k` regions closest to a point, by true point-to-region
   distance (center index + rerank).
-- **membership** (`containing`) -- the regions that enclose a point. Candidates
+- **membership** (`containing`): the regions that enclose a point. Candidates
   come from a *power-distance lift* that ranks regions by extent, so a large
-  general concept is found even when its center is far from the point -- the case
+  general concept is found even when its center is far from the point, the case
   a center-only index misses.
-- **subsumption** (`subsumers` / `subsumees`) -- the regions that contain, or are
+- **subsumption** (`subsumers` / `subsumees`): the regions that contain, or are
   contained by, a query region (a concept's hypernyms / hyponyms).
-- **overlap** (`overlapping`) -- the regions that intersect a query region (the
+- **overlap** (`overlapping`): the regions that intersect a query region (the
   conjunction primitive: concepts sharing members).
-- **region similarity** (`nearest_region`) -- the regions nearest a query region.
+- **region similarity** (`nearest_region`): the regions nearest a query region.
 
 Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
 `Region::entailment_prob` (the soft subsumption probability
@@ -46,15 +46,19 @@ idx.add(2, AxisBox::new(vec![20.0, 20.0], vec![21.0, 21.0])).unwrap();
 idx.build().unwrap();
 
 // nearest region to a point inside only the general concept
-let nearest = idx.search(&[1.0, 1.0], 1, Default::default()).unwrap();
+let nearest = idx.search(&[1.0, 1.0], 1, SearchParams::default()).unwrap();
 assert_eq!(nearest[0].0, 0);
 
-// membership: regions enclosing [5, 5]  -> {0, 1}
-let enclosing = idx.containing(&[5.0, 5.0], Default::default()).unwrap();
+// membership: regions enclosing [5, 5]
+let mut enclosing = idx.containing(&[5.0, 5.0], Default::default()).unwrap();
+enclosing.sort();
+assert_eq!(enclosing, vec![0, 1]);
 
-// subsumption: regions that contain a small probe box -> the more general concepts
+// subsumption: regions that contain a small probe box
 let probe = AxisBox::new(vec![4.5, 4.5], vec![5.5, 5.5]);
-let subsumers = idx.subsumers(&probe, Default::default()).unwrap();
+let mut subsumers = idx.subsumers(&probe, Default::default()).unwrap();
+subsumers.sort();
+assert_eq!(subsumers, vec![0, 1]);
 ```
 
 `SearchParams::overretrieve` controls the over-retrieval factor (default 10x).
@@ -97,15 +101,21 @@ segment to be rebuilt from its source regions.
 The examples measure recall@k against an exhaustive point-to-region scan. Run
 `examples/recall_gap` for synthetic box datasets, `examples/glove_concepts` for
 clustered GloVe vectors, or `examples/geo_regions` for geographic bounding
-boxes. See [examples/README.md](examples/README.md) for commands, captured
-output, and data requirements.
+boxes. See [examples/README.md](examples/README.md) for every runnable example,
+its commands, captured output, and data requirements.
+
+One run of `cargo run --release --example recall_gap` on 10,000 synthetic
+128-d boxes, with timing columns omitted (the data is unseeded, so numbers
+vary between runs):
+
+```text
+=== wide (d=128, w=0.5) (n=10000, dim=128, width_mean=0.50) ===
+  overretrieve=  1x  recall@10=0.6100
+  overretrieve= 10x  recall@10=0.9810
+  overretrieve= 50x  recall@10=0.9995
+```
 
 The point ANN backend is [vicinity](https://github.com/arclabs561/vicinity) (HNSW).
-
-## Examples
-
-See [examples/README.md](examples/README.md) for the full set of runnable
-examples.
 
 ## License
 
