@@ -7,6 +7,8 @@ unstable: minor bumps may break the public API.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-01
+
 ### Fixed
 
 - `RegionIndex::search` also draws candidates from the lifted power-distance
