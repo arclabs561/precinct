@@ -80,7 +80,27 @@ Loaded 177 country regions.
 recall@3 over a 136-point world grid: 92.9%
 ```
 
-If the dataset is absent, the example exits 0 and prints the fetch command.
+To query your own regions, set `NE_COUNTRIES` to a GeoJSON FeatureCollection
+with 2D coordinates and a `properties.NAME` for each feature. Pass a longitude
+and latitude in degrees. This fixture puts the query inside the long West box
+even though the East box has the nearer center.
+
+```sh
+cat > boxes.geojson <<'JSON'
+{"type":"FeatureCollection","features":[
+  {"type":"Feature","properties":{"NAME":"West"},"geometry":{"type":"LineString","coordinates":[[-10,0],[1,1]]}},
+  {"type":"Feature","properties":{"NAME":"East"},"geometry":{"type":"Point","coordinates":[2,0]}}
+]}
+JSON
+NE_COUNTRIES=boxes.geojson cargo run --quiet --example geo_regions -- 1 0
+# Loaded 2 country regions.
+# indexed: West (0.0), East (1.0)
+# exhaustive: West (0.0), East (1.0)
+```
+
+Both lines report Euclidean distance in degrees to each feature's bounding box.
+Equal distances can appear in either order. An explicit query fails if no regions
+can be loaded. With no arguments, missing data prints the fetch command.
 
 ### `wordnet_boxes`: do trained boxes recover hypernym ancestors?
 

@@ -98,6 +98,9 @@ segment to be rebuilt from its source regions.
 
 ## Recall
 
+To compare indexed and exhaustive results for your own longitude and latitude,
+see the [GeoJSON example](examples/README.md#geo_regions-when-does-surface-distance-differ-from-center-distance).
+
 The examples measure recall@k against an exhaustive point-to-region scan. Run
 `examples/recall_gap` for synthetic box datasets, `examples/glove_concepts` for
 clustered GloVe vectors, or `examples/geo_regions` for geographic bounding

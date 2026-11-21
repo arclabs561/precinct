@@ -9,21 +9,36 @@
 //! over centers would miss it.
 //!
 //! Data (gitignored): run `scripts/fetch_natural_earth.sh` first. Without it
-//! this example prints instructions and exits 0.
+//! the no-argument demo prints instructions and exits 0.
 //!
-//! Run: cargo run --release --example geo_regions
+//! Run: cargo run --release --example geo_regions [-- LONGITUDE LATITUDE]
 
 use precinct::{box_to_point_l2, AxisBox, IndexParams, RegionIndex, SearchParams};
 use serde_json::Value;
 
 const COUNTRIES: &str = "data/ne_countries.json";
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let query = match args.as_slice() {
+        [] => None,
+        [lon, lat] => {
+            let point = [lon.parse::<f32>()?, lat.parse::<f32>()?];
+            if !(-180.0..=180.0).contains(&point[0]) || !(-90.0..=90.0).contains(&point[1]) {
+                return Err("expected longitude in [-180, 180] and latitude in [-90, 90]".into());
+            }
+            Some(point)
+        }
+        _ => return Err("usage: geo_regions [LONGITUDE LATITUDE]".into()),
+    };
     let path = std::env::var("NE_COUNTRIES").unwrap_or_else(|_| COUNTRIES.to_string());
     let Some(regions) = load_countries(&path) else {
+        if query.is_some() {
+            return Err(format!("could not read any regions from {path}").into());
+        }
         eprintln!("Natural Earth countries not found at {path}.");
         eprintln!("Fetch with: scripts/fetch_natural_earth.sh");
-        return; // data-gated: a clean no-op when the dataset is absent.
+        return Ok(()); // data-gated: a clean no-op when the dataset is absent.
     };
     println!("Loaded {} country regions.", regions.len());
 
@@ -44,17 +59,13 @@ fn main() {
         ("Sahara interior", [12.0, 23.0]),
     ];
 
-    let params = || SearchParams {
-        ef: 64,
-        overretrieve: 20,
-    };
+    if let Some(point) = query {
+        println!("{}", query_report(&idx, &regions, &point)?);
+        return Ok(());
+    }
     for (label, q) in queries {
         let got = idx.search(&q, 3, params()).expect("search");
-        let names: Vec<String> = got
-            .iter()
-            .map(|(id, d)| format!("{} ({:.1})", regions[*id as usize].0, d))
-            .collect();
-        println!("  {label:<28} -> {}", names.join(", "));
+        println!("  {label:<28} -> {}", format_hits(&regions, &got));
 
         // Contrast: the nearest region by box-center distance can differ.
         let by_center = nearest_by_center(&regions, &q);
@@ -90,6 +101,35 @@ fn main() {
         grid.len(),
         hit as f64 / total as f64 * 100.0
     );
+    Ok(())
+}
+
+fn params() -> SearchParams {
+    SearchParams {
+        ef: 64,
+        overretrieve: 20,
+    }
+}
+
+fn query_report(
+    index: &RegionIndex<AxisBox>,
+    regions: &[(String, AxisBox)],
+    point: &[f32; 2],
+) -> Result<String, precinct::Error> {
+    let indexed = index.search(point, 3, params())?;
+    let exact = index.search_exhaustive(point, 3);
+    Ok(format!(
+        "indexed: {}\nexhaustive: {}",
+        format_hits(regions, &indexed),
+        format_hits(regions, &exact),
+    ))
+}
+
+fn format_hits(regions: &[(String, AxisBox)], hits: &[(u32, f32)]) -> String {
+    hits.iter()
+        .map(|(id, distance)| format!("{} ({distance:.1})", regions[*id as usize].0))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Parse a Natural Earth `FeatureCollection` into `(name, bounding-box)` regions.
@@ -162,4 +202,37 @@ fn exhaustive_top_k(regions: &[(String, AxisBox)], q: &[f32], k: usize) -> Vec<(
     all.sort_by(|a, b| a.1.total_cmp(&b.1));
     all.truncate(k);
     all
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_query_changes_nearest_box_on_both_paths() {
+        let regions = vec![
+            (
+                "West".to_owned(),
+                AxisBox::new(vec![-10.0, 0.0], vec![1.0, 1.0]),
+            ),
+            (
+                "East".to_owned(),
+                AxisBox::new(vec![2.0, 0.0], vec![2.0, 0.0]),
+            ),
+        ];
+        let mut idx = RegionIndex::new(2, IndexParams::default()).unwrap();
+        for (id, (_, b)) in regions.iter().enumerate() {
+            idx.add(id as u32, b.clone()).unwrap();
+        }
+        idx.build().unwrap();
+        for (point, names) in [
+            ([1.0, 0.0], "West (0.0), East (1.0)"),
+            ([2.0, 0.0], "East (0.0), West (1.0)"),
+        ] {
+            assert_eq!(
+                query_report(&idx, &regions, &point).unwrap(),
+                format!("indexed: {names}\nexhaustive: {names}")
+            );
+        }
+    }
 }
