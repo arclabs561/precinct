@@ -29,7 +29,7 @@ rand = "0.9"
 tempfile = "3"
 # Complex-query engine for the end-to-end example (examples/heyting_queries):
 # precinct serves the candidates, heyting composes the logic.
-heyting = "0.6"
+heyting = "0.17"
 # Concept-region construction from real word vectors (examples/glove_concepts).
 clump = "0.5"
 # GeoJSON parsing for the geographic-region example (examples/geo_regions).
