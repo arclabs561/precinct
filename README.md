@@ -6,7 +6,9 @@ Approximate nearest-neighbor search over region embeddings.
 dimensions. It answers these query families over a region corpus:
 
 - **nearest**: the `k` regions closest to a point, by true point-to-region
-  distance (center index + rerank).
+  distance (`search`). Candidates come from both the center index and the
+  extent-aware power-distance index. The union is reranked by point-to-region
+  distance.
 - **membership** (`containing`): the regions that enclose a point. Candidates
   come from a *power-distance lift* that ranks regions by extent, so a large
   general concept is found even when its center is far from the point, the case
@@ -15,7 +17,8 @@ dimensions. It answers these query families over a region corpus:
   contained by, a query region (a concept's hypernyms / hyponyms).
 - **overlap** (`overlapping`): the regions that intersect a query region (the
   conjunction primitive: concepts sharing members).
-- **region similarity** (`nearest_region`): the regions nearest a query region.
+- **region similarity** (`nearest_region`): approximate neighbors by L2
+  distance between region centers.
 
 Retrieved regions carry their own scoring: `Region::log_volume` (generality) and
 `Region::entailment_prob` (the soft subsumption probability
